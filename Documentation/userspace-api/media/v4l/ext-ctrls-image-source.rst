@@ -59,6 +59,20 @@ Image Source Control IDs
     non-sensitive.
     This control is required for automatic calibration of sensors/cameras.
 
+.. c:type:: v4l2_area
+
+.. flat-table:: struct v4l2_area
+    :header-rows:  0
+    :stub-columns: 0
+    :widths:       1 1 2
+
+    * - __u32
+      - ``width``
+      - Width of the area.
+    * - __u32
+      - ``height``
+      - Height of the area.
+
 ``V4L2_CID_NOTIFY_GAINS (integer array)``
     The sensor is notified what gains will be applied to the different
     colour channels by subsequent processing (such as by an ISP). The

@@ -55,6 +55,8 @@
 #include "vc_sm_knl.h"
 #include <linux/broadcom/vc_sm_cma_ioctl.h>
 
+MODULE_IMPORT_NS(DMA_BUF);
+
 /* ---- Private Constants and Types --------------------------------------- */
 
 #define DEVICE_NAME		"vcsm-cma"
@@ -104,6 +106,7 @@ struct sm_state_t {
 					 * has finished with a resource.
 					 */
 	u32 int_trans_id;		/* Interrupted transaction. */
+	struct vchiq_instance *vchiq_instance;
 };
 
 struct vc_sm_dma_buf_attachment {
@@ -530,7 +533,7 @@ static void vc_sm_dma_buf_release(struct dma_buf *dmabuf)
 
 	pr_debug("%s dmabuf %p, buffer %p\n", __func__, dmabuf, buffer);
 
-	buffer->in_use = 0;
+	buffer->in_use = false;
 
 	/* Unmap on the VPU */
 	vc_sm_vpu_free(buffer);
@@ -720,6 +723,7 @@ vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
 	struct dma_buf_attachment *attach = NULL;
 	struct sg_table *sgt = NULL;
 	dma_addr_t dma_addr;
+	u32 cache_alias;
 	int ret = 0;
 	int status;
 
@@ -762,9 +766,13 @@ vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
 	import.type = VC_SM_ALLOC_NON_CACHED;
 	dma_addr = sg_dma_address(sgt->sgl);
 	import.addr = (u32)dma_addr;
-	if ((import.addr & 0xC0000000) != 0xC0000000) {
+	cache_alias = import.addr & 0xC0000000;
+	if (cache_alias != 0xC0000000 && cache_alias != 0x80000000) {
 		pr_err("%s: Expecting an uncached alias for dma_addr %pad\n",
 		       __func__, &dma_addr);
+		/* Note that this assumes we're on >= Pi2, but it implies a
+		 * DT configuration error.
+		 */
 		import.addr |= 0xC0000000;
 	}
 	import.size = sg_dma_len(sgt->sgl);
@@ -805,13 +813,13 @@ vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
 	buffer->size = import.size;
 	buffer->vpu_state = VPU_MAPPED;
 
-	buffer->imported = 1;
+	buffer->imported = true;
 	buffer->import.dma_buf = dma_buf;
 
 	buffer->import.attach = attach;
 	buffer->import.sgt = sgt;
 	buffer->dma_addr = dma_addr;
-	buffer->in_use = 1;
+	buffer->in_use = true;
 	buffer->kernel_id = import.kernel_id;
 
 	/*
@@ -1242,7 +1250,9 @@ static void (*cache_op_to_func(const unsigned int cache_op))
 		return NULL;
 
 	case VC_SM_CACHE_OP_INV:
+		return dmac_inv_range;
 	case VC_SM_CACHE_OP_CLEAN:
+		return dmac_clean_range;
 	case VC_SM_CACHE_OP_FLUSH:
 		return dmac_flush_range;
 
@@ -1482,7 +1492,6 @@ static const struct file_operations vc_sm_ops = {
 static void vc_sm_connected_init(void)
 {
 	int ret;
-	struct vchiq_instance *vchiq_instance;
 	struct vc_sm_version version;
 	struct vc_sm_result_t version_result;
 
@@ -1492,7 +1501,7 @@ static void vc_sm_connected_init(void)
 	 * Initialize and create a VCHI connection for the shared memory service
 	 * running on videocore.
 	 */
-	ret = vchiq_initialise(&vchiq_instance);
+	ret = vchiq_initialise(&sm_state->vchiq_instance);
 	if (ret) {
 		pr_err("[%s]: failed to initialise VCHI instance (ret=%d)\n",
 		       __func__, ret);
@@ -1500,7 +1509,7 @@ static void vc_sm_connected_init(void)
 		return;
 	}
 
-	ret = vchiq_connect(vchiq_instance);
+	ret = vchiq_connect(sm_state->vchiq_instance);
 	if (ret) {
 		pr_err("[%s]: failed to connect VCHI instance (ret=%d)\n",
 		       __func__, ret);
@@ -1509,7 +1518,7 @@ static void vc_sm_connected_init(void)
 	}
 
 	/* Initialize an instance of the shared memory service. */
-	sm_state->sm_handle = vc_sm_cma_vchi_init(vchiq_instance, 1,
+	sm_state->sm_handle = vc_sm_cma_vchi_init(sm_state->vchiq_instance, 1,
 						  vc_sm_vpu_event);
 	if (!sm_state->sm_handle) {
 		pr_err("[%s]: failed to initialize shared memory service\n",
@@ -1567,7 +1576,7 @@ err_remove_misc_dev:
 	misc_deregister(&sm_state->misc_dev);
 err_remove_debugfs:
 	debugfs_remove_recursive(sm_state->dir_root);
-	vc_sm_cma_vchi_stop(&sm_state->sm_handle);
+	vc_sm_cma_vchi_stop(sm_state->vchiq_instance, &sm_state->sm_handle);
 }
 
 /* Driver loading. */
@@ -1605,7 +1614,7 @@ static int bcm2835_vc_sm_cma_remove(struct platform_device *pdev)
 		debugfs_remove_recursive(sm_state->dir_root);
 
 		/* Stop the videocore shared memory service. */
-		vc_sm_cma_vchi_stop(&sm_state->sm_handle);
+		vc_sm_cma_vchi_stop(sm_state->vchiq_instance, &sm_state->sm_handle);
 	}
 
 	if (sm_state) {

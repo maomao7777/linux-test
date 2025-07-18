@@ -41,6 +41,8 @@
 #include "vchiq-mmal/mmal-parameters.h"
 #include "vchiq-mmal/mmal-vchiq.h"
 
+MODULE_IMPORT_NS(DMA_BUF);
+
 /*
  * Default /dev/videoN node numbers for decode and encode.
  * Deliberately avoid the very low numbers as these are often taken by webcams
@@ -61,6 +63,10 @@ MODULE_PARM_DESC(isp_video_nr, "isp video device number");
 static int deinterlace_video_nr = 18;
 module_param(deinterlace_video_nr, int, 0644);
 MODULE_PARM_DESC(deinterlace_video_nr, "deinterlace video device number");
+
+static int encode_image_nr = 31;
+module_param(encode_image_nr, int, 0644);
+MODULE_PARM_DESC(encode_image_nr, "encoder image device number");
 
 /*
  * Workaround for GStreamer v4l2convert component not considering Bayer formats
@@ -88,6 +94,7 @@ enum bcm2835_codec_role {
 	ENCODE,
 	ISP,
 	DEINTERLACE,
+	ENCODE_IMAGE,
 	NUM_ROLES
 };
 
@@ -96,6 +103,7 @@ static const char * const roles[] = {
 	"encode",
 	"isp",
 	"image_fx",
+	"encode_image",
 };
 
 static const char * const components[] = {
@@ -103,6 +111,7 @@ static const char * const components[] = {
 	"ril.video_encode",
 	"ril.isp",
 	"ril.image_fx",
+	"ril.image_encode",
 };
 
 /* Timeout for stop_streaming to allow all buffers to return */
@@ -110,8 +119,10 @@ static const char * const components[] = {
 
 #define MIN_W		32
 #define MIN_H		32
-#define MAX_W		1920
-#define MAX_H		1920
+#define MAX_W_CODEC	1920
+#define MAX_H_CODEC	1920
+#define MAX_W_ISP	16384
+#define MAX_H_ISP	16384
 #define BPL_ALIGN	32
 /*
  * The decoder spec supports the V4L2_EVENT_SOURCE_CHANGE event, but the docs
@@ -136,6 +147,8 @@ static const char * const components[] = {
  */
 #define DEF_COMP_BUF_SIZE_GREATER_720P	(768 << 10)
 #define DEF_COMP_BUF_SIZE_720P_OR_LESS	(512 << 10)
+/* JPEG image can be very large. For paranoid reasons 4MB is used */
+#define DEF_COMP_BUF_SIZE_JPEG (4096 << 10)
 
 /* Flags that indicate a format can be used for capture/output */
 #define MEM2MEM_CAPTURE		BIT(0)
@@ -158,94 +171,108 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* YUV formats */
 		.fourcc			= V4L2_PIX_FMT_YUV420,
 		.depth			= 8,
-		.bytesperline_align	= { 32, 64, 64, 32 },
+		.bytesperline_align	= { 32, 64, 64, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_I420,
 		.size_multiplier_x2	= 3,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_YVU420,
 		.depth			= 8,
-		.bytesperline_align	= { 32, 64, 64, 32 },
+		.bytesperline_align	= { 32, 64, 64, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_YV12,
 		.size_multiplier_x2	= 3,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_NV12,
 		.depth			= 8,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_NV12,
 		.size_multiplier_x2	= 3,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_NV21,
 		.depth			= 8,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_NV21,
 		.size_multiplier_x2	= 3,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_RGB565,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_RGB16,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_YUYV,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 64, 64, 64, 64, 64 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_YUYV,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_UYVY,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 64, 64, 64, 64, 64 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_UYVY,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_YVYU,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 64, 64, 64, 64, 64 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_YVYU,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_VYUY,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 64, 64, 64, 64, 64 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_VYUY,
 		.size_multiplier_x2	= 2,
 	}, {
+		.fourcc			= V4L2_PIX_FMT_NV12_COL128,
+		.depth			= 8,
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
+		.flags			= 0,
+		.mmal_fmt		= MMAL_ENCODING_YUVUV128,
+		.size_multiplier_x2	= 3,
+	}, {
 		/* RGB formats */
 		.fourcc			= V4L2_PIX_FMT_RGB24,
 		.depth			= 24,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_RGB24,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_BGR24,
 		.depth			= 24,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BGR24,
 		.size_multiplier_x2	= 2,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_BGR32,
 		.depth			= 32,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BGRA,
+		.size_multiplier_x2	= 2,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_RGBA32,
+		.depth			= 32,
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
+		.flags			= 0,
+		.mmal_fmt		= MMAL_ENCODING_RGBA,
 		.size_multiplier_x2	= 2,
 	}, {
 		/* Bayer formats */
 		/* 8 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB8,
 		.depth			= 8,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB8,
 		.size_multiplier_x2	= 2,
@@ -253,7 +280,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR8,
 		.depth			= 8,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR8,
 		.size_multiplier_x2	= 2,
@@ -261,7 +288,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG8,
 		.depth			= 8,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG8,
 		.size_multiplier_x2	= 2,
@@ -269,7 +296,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG8,
 		.depth			= 8,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG8,
 		.size_multiplier_x2	= 2,
@@ -278,7 +305,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 10 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB10P,
 		.depth			= 10,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB10P,
 		.size_multiplier_x2	= 2,
@@ -286,7 +313,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR10P,
 		.depth			= 10,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR10P,
 		.size_multiplier_x2	= 2,
@@ -294,7 +321,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG10P,
 		.depth			= 10,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG10P,
 		.size_multiplier_x2	= 2,
@@ -302,7 +329,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG10P,
 		.depth			= 10,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG10P,
 		.size_multiplier_x2	= 2,
@@ -311,7 +338,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 12 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB12P,
 		.depth			= 12,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB12P,
 		.size_multiplier_x2	= 2,
@@ -319,7 +346,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR12P,
 		.depth			= 12,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR12P,
 		.size_multiplier_x2	= 2,
@@ -327,7 +354,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG12P,
 		.depth			= 12,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG12P,
 		.size_multiplier_x2	= 2,
@@ -335,7 +362,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG12P,
 		.depth			= 12,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG12P,
 		.size_multiplier_x2	= 2,
@@ -344,7 +371,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 14 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB14P,
 		.depth			= 14,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB14P,
 		.size_multiplier_x2	= 2,
@@ -352,7 +379,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR14P,
 		.depth			= 14,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR14P,
 		.size_multiplier_x2	= 2,
@@ -361,7 +388,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG14P,
 		.depth			= 14,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG14P,
 		.size_multiplier_x2	= 2,
@@ -369,7 +396,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG14P,
 		.depth			= 14,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG14P,
 		.size_multiplier_x2	= 2,
@@ -378,7 +405,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 16 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB16,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB16,
 		.size_multiplier_x2	= 2,
@@ -386,7 +413,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR16,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR16,
 		.size_multiplier_x2	= 2,
@@ -394,7 +421,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG16,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG16,
 		.size_multiplier_x2	= 2,
@@ -402,7 +429,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG16,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG16,
 		.size_multiplier_x2	= 2,
@@ -412,7 +439,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 10 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB10,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB10,
 		.size_multiplier_x2	= 2,
@@ -420,7 +447,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR10,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR10,
 		.size_multiplier_x2	= 2,
@@ -428,7 +455,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG10,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG10,
 		.size_multiplier_x2	= 2,
@@ -436,7 +463,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG10,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG10,
 		.size_multiplier_x2	= 2,
@@ -445,7 +472,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 12 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB12,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB12,
 		.size_multiplier_x2	= 2,
@@ -453,7 +480,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR12,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR12,
 		.size_multiplier_x2	= 2,
@@ -461,7 +488,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG12,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG12,
 		.size_multiplier_x2	= 2,
@@ -469,7 +496,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG12,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG12,
 		.size_multiplier_x2	= 2,
@@ -478,7 +505,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 14 bit */
 		.fourcc			= V4L2_PIX_FMT_SRGGB14,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SRGGB14,
 		.size_multiplier_x2	= 2,
@@ -486,7 +513,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SBGGR14,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SBGGR14,
 		.size_multiplier_x2	= 2,
@@ -494,7 +521,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGRBG14,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGRBG14,
 		.size_multiplier_x2	= 2,
@@ -502,7 +529,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 	}, {
 		.fourcc			= V4L2_PIX_FMT_SGBRG14,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_BAYER_SGBRG14,
 		.size_multiplier_x2	= 2,
@@ -512,7 +539,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 8 bit */
 		.fourcc			= V4L2_PIX_FMT_GREY,
 		.depth			= 8,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_GREY,
 		.size_multiplier_x2	= 2,
@@ -520,7 +547,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 10 bit */
 		.fourcc			= V4L2_PIX_FMT_Y10P,
 		.depth			= 10,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y10P,
 		.size_multiplier_x2	= 2,
@@ -528,7 +555,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 12 bit */
 		.fourcc			= V4L2_PIX_FMT_Y12P,
 		.depth			= 12,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y12P,
 		.size_multiplier_x2	= 2,
@@ -536,7 +563,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 14 bit */
 		.fourcc			= V4L2_PIX_FMT_Y14P,
 		.depth			= 14,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y14P,
 		.size_multiplier_x2	= 2,
@@ -544,7 +571,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 16 bit */
 		.fourcc			= V4L2_PIX_FMT_Y16,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y16,
 		.size_multiplier_x2	= 2,
@@ -552,7 +579,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 10 bit as 16bpp */
 		.fourcc			= V4L2_PIX_FMT_Y10,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y10,
 		.size_multiplier_x2	= 2,
@@ -560,7 +587,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 12 bit as 16bpp */
 		.fourcc			= V4L2_PIX_FMT_Y12,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y12,
 		.size_multiplier_x2	= 2,
@@ -568,7 +595,7 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		/* 14 bit as 16bpp */
 		.fourcc			= V4L2_PIX_FMT_Y14,
 		.depth			= 16,
-		.bytesperline_align	= { 32, 32, 32, 32 },
+		.bytesperline_align	= { 32, 32, 32, 32, 32 },
 		.flags			= 0,
 		.mmal_fmt		= MMAL_ENCODING_Y14,
 		.size_multiplier_x2	= 2,
@@ -578,6 +605,11 @@ static const struct bcm2835_codec_fmt supported_formats[] = {
 		.depth			= 0,
 		.flags			= V4L2_FMT_FLAG_COMPRESSED,
 		.mmal_fmt		= MMAL_ENCODING_H264,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_JPEG,
+		.depth			= 0,
+		.flags			= V4L2_FMT_FLAG_COMPRESSED,
+		.mmal_fmt		= MMAL_ENCODING_JPEG,
 	}, {
 		.fourcc			= V4L2_PIX_FMT_MJPEG,
 		.depth			= 0,
@@ -656,6 +688,13 @@ struct bcm2835_codec_dev {
 	/* The list of formats supported on input and output queues. */
 	struct bcm2835_codec_fmt_list	supported_fmts[2];
 
+	/*
+	 * Max size supported varies based on role. Store during
+	 * bcm2835_codec_create for use later.
+	 */
+	unsigned int max_w;
+	unsigned int max_h;
+
 	struct vchiq_mmal_instance	*instance;
 
 	struct v4l2_m2m_dev	*m2m_dev;
@@ -666,6 +705,7 @@ struct bcm2835_codec_ctx {
 	struct bcm2835_codec_dev	*dev;
 
 	struct v4l2_ctrl_handler hdl;
+	struct v4l2_ctrl *gop_size;
 
 	struct vchiq_mmal_component  *component;
 	bool component_enabled;
@@ -698,6 +738,7 @@ struct bcm2835_codec_driver {
 	struct bcm2835_codec_dev *decode;
 	struct bcm2835_codec_dev *isp;
 	struct bcm2835_codec_dev *deinterlace;
+	struct bcm2835_codec_dev *encode_image;
 };
 
 enum {
@@ -831,20 +872,41 @@ static inline unsigned int get_sizeimage(int bpl, int width, int height,
 					 struct bcm2835_codec_fmt *fmt)
 {
 	if (fmt->flags & V4L2_FMT_FLAG_COMPRESSED) {
+		if (fmt->fourcc == V4L2_PIX_FMT_JPEG)
+			return DEF_COMP_BUF_SIZE_JPEG;
+
 		if (width * height > 1280 * 720)
 			return DEF_COMP_BUF_SIZE_GREATER_720P;
 		else
 			return DEF_COMP_BUF_SIZE_720P_OR_LESS;
-	} else {
-		return (bpl * height * fmt->size_multiplier_x2) >> 1;
 	}
+
+	if (fmt->fourcc != V4L2_PIX_FMT_NV12_COL128)
+		return (bpl * height * fmt->size_multiplier_x2) >> 1;
+
+	/*
+	 * V4L2_PIX_FMT_NV12_COL128 is 128 pixel wide columns.
+	 * bytesperline is the column stride in lines, so multiply by
+	 * the number of columns and 128.
+	 */
+	return (ALIGN(width, 128) * bpl);
 }
 
-static inline unsigned int get_bytesperline(int width,
+static inline unsigned int get_bytesperline(int width, int height,
 					    struct bcm2835_codec_fmt *fmt,
 					    enum bcm2835_codec_role role)
 {
-	return ALIGN((width * fmt->depth) >> 3, fmt->bytesperline_align[role]);
+	if (fmt->fourcc != V4L2_PIX_FMT_NV12_COL128)
+		return ALIGN((width * fmt->depth) >> 3,
+			     fmt->bytesperline_align[role]);
+
+	/*
+	 * V4L2_PIX_FMT_NV12_COL128 passes the column stride in lines via
+	 * bytesperline.
+	 * The minimum value for this is sufficient for the base luma and chroma
+	 * with no padding.
+	 */
+	return (height * 3) >> 1;
 }
 
 static void setup_mmal_port_format(struct bcm2835_codec_ctx *ctx,
@@ -852,16 +914,27 @@ static void setup_mmal_port_format(struct bcm2835_codec_ctx *ctx,
 				   struct vchiq_mmal_port *port)
 {
 	port->format.encoding = q_data->fmt->mmal_fmt;
+	port->format.flags = 0;
 
 	if (!(q_data->fmt->flags & V4L2_FMT_FLAG_COMPRESSED)) {
-		/* Raw image format - set width/height */
-		port->es.video.width = (q_data->bytesperline << 3) /
-						q_data->fmt->depth;
-		port->es.video.height = q_data->height;
-		port->es.video.crop.width = q_data->crop_width;
-		port->es.video.crop.height = q_data->crop_height;
-		port->es.video.frame_rate.num = ctx->framerate_num;
-		port->es.video.frame_rate.den = ctx->framerate_denom;
+		if (q_data->fmt->mmal_fmt != MMAL_ENCODING_YUVUV128) {
+			/* Raw image format - set width/height */
+			port->es.video.width = (q_data->bytesperline << 3) /
+							q_data->fmt->depth;
+			port->es.video.height = q_data->height;
+			port->es.video.crop.width = q_data->crop_width;
+			port->es.video.crop.height = q_data->crop_height;
+		} else {
+			/* NV12_COL128 / YUVUV128 column format */
+			/* Column stride in lines */
+			port->es.video.width = q_data->bytesperline;
+			port->es.video.height = q_data->height;
+			port->es.video.crop.width = q_data->crop_width;
+			port->es.video.crop.height = q_data->crop_height;
+			port->format.flags = MMAL_ES_FORMAT_FLAG_COL_FMTS_WIDTH_IS_COL_STRIDE;
+		}
+		port->es.video.frame_rate.numerator = ctx->framerate_num;
+		port->es.video.frame_rate.denominator = ctx->framerate_denom;
 	} else {
 		/* Compressed format - leave resolution as 0 for decode */
 		if (ctx->dev->role == DECODE) {
@@ -875,8 +948,8 @@ static void setup_mmal_port_format(struct bcm2835_codec_ctx *ctx,
 			port->es.video.crop.width = q_data->crop_width;
 			port->es.video.crop.height = q_data->crop_height;
 			port->format.bitrate = ctx->bitrate;
-			port->es.video.frame_rate.num = ctx->framerate_num;
-			port->es.video.frame_rate.den = ctx->framerate_denom;
+			port->es.video.frame_rate.numerator = ctx->framerate_num;
+			port->es.video.frame_rate.denominator = ctx->framerate_denom;
 		}
 	}
 	port->es.video.crop.x = 0;
@@ -1042,6 +1115,7 @@ static void handle_fmt_changed(struct bcm2835_codec_ctx *ctx,
 	 */
 	q_data->selection_set = true;
 	q_data->bytesperline = get_bytesperline(format->es.video.width,
+						format->es.video.height,
 						q_data->fmt, ctx->dev->role);
 
 	q_data->height = format->es.video.height;
@@ -1050,8 +1124,8 @@ static void handle_fmt_changed(struct bcm2835_codec_ctx *ctx,
 		color_mmal2v4l(ctx, format->format.encoding,
 			       format->es.video.color_space);
 
-	q_data->aspect_ratio.numerator = format->es.video.par.num;
-	q_data->aspect_ratio.denominator = format->es.video.par.den;
+	q_data->aspect_ratio.numerator = format->es.video.par.numerator;
+	q_data->aspect_ratio.denominator = format->es.video.par.denominator;
 
 	ret = vchiq_mmal_port_parameter_get(ctx->dev->instance,
 					    &ctx->component->output[0],
@@ -1134,10 +1208,15 @@ static void op_buffer_cb(struct vchiq_mmal_instance *instance,
 		v4l2_dbg(2, debug, &ctx->dev->v4l2_dev, "%s: Empty buffer - flags %04x",
 			 __func__, mmal_buf->mmal_flags);
 		if (!(mmal_buf->mmal_flags & MMAL_BUFFER_HEADER_FLAG_EOS)) {
-			vb2_buffer_done(&vb2->vb2_buf, VB2_BUF_STATE_QUEUED);
-			if (!port->enabled &&
-			    atomic_read(&port->buffers_with_vpu))
-				complete(&ctx->frame_cmplt);
+			if (!port->enabled) {
+				vb2_buffer_done(&vb2->vb2_buf, VB2_BUF_STATE_QUEUED);
+				if (atomic_read(&port->buffers_with_vpu))
+					complete(&ctx->frame_cmplt);
+			} else {
+				vchiq_mmal_submit_buffer(ctx->dev->instance,
+							 &ctx->component->output[0],
+							 mmal_buf);
+			}
 			return;
 		}
 	}
@@ -1402,10 +1481,10 @@ static int vidioc_try_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 	 * The V4L2 specification requires the driver to correct the format
 	 * struct if any of the dimensions is unsupported
 	 */
-	if (f->fmt.pix_mp.width > MAX_W)
-		f->fmt.pix_mp.width = MAX_W;
-	if (f->fmt.pix_mp.height > MAX_H)
-		f->fmt.pix_mp.height = MAX_H;
+	if (f->fmt.pix_mp.width > ctx->dev->max_w)
+		f->fmt.pix_mp.width = ctx->dev->max_w;
+	if (f->fmt.pix_mp.height > ctx->dev->max_h)
+		f->fmt.pix_mp.height = ctx->dev->max_h;
 
 	if (!(fmt->flags & V4L2_FMT_FLAG_COMPRESSED)) {
 		/* Only clip min w/h on capture. Treat 0x0 as unknown. */
@@ -1415,17 +1494,18 @@ static int vidioc_try_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 			f->fmt.pix_mp.height = MIN_H;
 
 		/*
-		 * For decoders the buffer must have a vertical alignment of 16
-		 * lines.
+		 * For decoders and image encoders the buffer must have
+		 * a vertical alignment of 16 lines.
 		 * The selection will reflect any cropping rectangle when only
 		 * some of the pixels are active.
 		 */
-		if (ctx->dev->role == DECODE)
+		if (ctx->dev->role == DECODE || ctx->dev->role == ENCODE_IMAGE)
 			f->fmt.pix_mp.height = ALIGN(f->fmt.pix_mp.height, 16);
 	}
 	f->fmt.pix_mp.num_planes = 1;
-	min_bytesperline = get_bytesperline(f->fmt.pix_mp.width, fmt,
-					    ctx->dev->role);
+	min_bytesperline = get_bytesperline(f->fmt.pix_mp.width,
+					    f->fmt.pix_mp.height,
+					    fmt, ctx->dev->role);
 	if (f->fmt.pix_mp.plane_fmt[0].bytesperline < min_bytesperline)
 		f->fmt.pix_mp.plane_fmt[0].bytesperline = min_bytesperline;
 	f->fmt.pix_mp.plane_fmt[0].bytesperline =
@@ -1545,7 +1625,8 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 				  f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 	q_data->crop_width = f->fmt.pix_mp.width;
 	q_data->height = f->fmt.pix_mp.height;
-	if (!q_data->selection_set)
+	if (!q_data->selection_set ||
+	    (q_data->fmt->flags & V4L2_FMT_FLAG_COMPRESSED))
 		q_data->crop_height = requested_height;
 
 	/*
@@ -1566,12 +1647,13 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 	v4l2_dbg(1, debug, &ctx->dev->v4l2_dev,	"Calculated bpl as %u, size %u\n",
 		 q_data->bytesperline, q_data->sizeimage);
 
-	if (ctx->dev->role == DECODE &&
+	if ((ctx->dev->role == DECODE || ctx->dev->role == ENCODE_IMAGE) &&
 	    q_data->fmt->flags & V4L2_FMT_FLAG_COMPRESSED &&
 	    q_data->crop_width && q_data->height) {
 		/*
-		 * On the decoder, if provided with a resolution on the input
-		 * side, then replicate that to the output side.
+		 * On the decoder or image encoder, if provided with
+		 * a resolution on the input side, then replicate that
+		 * to the output side.
 		 * GStreamer appears not to support V4L2_EVENT_SOURCE_CHANGE,
 		 * nor set up a resolution on the output side, therefore
 		 * we can't decode anything at a resolution other than the
@@ -1585,8 +1667,9 @@ static int vidioc_s_fmt(struct bcm2835_codec_ctx *ctx, struct v4l2_format *f,
 		q_data_dst->height = ALIGN(q_data->crop_height, 16);
 
 		q_data_dst->bytesperline =
-			get_bytesperline(f->fmt.pix_mp.width, q_data_dst->fmt,
-					 ctx->dev->role);
+			get_bytesperline(f->fmt.pix_mp.width,
+					 f->fmt.pix_mp.height,
+					 q_data_dst->fmt, ctx->dev->role);
 		q_data_dst->sizeimage = get_sizeimage(q_data_dst->bytesperline,
 						      q_data_dst->crop_width,
 						      q_data_dst->height,
@@ -1712,7 +1795,7 @@ static int vidioc_g_selection(struct file *file, void *priv,
 	switch (s->type) {
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
 		/* CAPTURE on encoder is not valid. */
-		if (ctx->dev->role == ENCODE)
+		if (ctx->dev->role == ENCODE || ctx->dev->role == ENCODE_IMAGE)
 			return -EINVAL;
 		q_data = &ctx->q_data[V4L2_M2M_DST];
 		break;
@@ -1755,6 +1838,7 @@ static int vidioc_g_selection(struct file *file, void *priv,
 		}
 		break;
 	case ENCODE:
+	case ENCODE_IMAGE:
 		switch (s->target) {
 		case V4L2_SEL_TGT_CROP_DEFAULT:
 		case V4L2_SEL_TGT_CROP_BOUNDS:
@@ -1774,7 +1858,6 @@ static int vidioc_g_selection(struct file *file, void *priv,
 		}
 		break;
 	case ISP:
-		break;
 	case DEINTERLACE:
 		if (s->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
 			switch (s->target) {
@@ -1827,6 +1910,8 @@ static int vidioc_s_selection(struct file *file, void *priv,
 {
 	struct bcm2835_codec_ctx *ctx = file2ctx(file);
 	struct bcm2835_codec_q_data *q_data = NULL;
+	struct vchiq_mmal_port *port = NULL;
+	int ret;
 
 	/*
 	 * The selection API takes V4L2_BUF_TYPE_VIDEO_CAPTURE and
@@ -1839,15 +1924,19 @@ static int vidioc_s_selection(struct file *file, void *priv,
 	switch (s->type) {
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
 		/* CAPTURE on encoder is not valid. */
-		if (ctx->dev->role == ENCODE)
+		if (ctx->dev->role == ENCODE || ctx->dev->role == ENCODE_IMAGE)
 			return -EINVAL;
 		q_data = &ctx->q_data[V4L2_M2M_DST];
+		if (ctx->component)
+			port = &ctx->component->output[0];
 		break;
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
 		/* OUTPUT on deoder is not valid. */
 		if (ctx->dev->role == DECODE)
 			return -EINVAL;
 		q_data = &ctx->q_data[V4L2_M2M_SRC];
+		if (ctx->component)
+			port = &ctx->component->input[0];
 		break;
 	default:
 		return -EINVAL;
@@ -1875,6 +1964,7 @@ static int vidioc_s_selection(struct file *file, void *priv,
 		}
 		break;
 	case ENCODE:
+	case ENCODE_IMAGE:
 		switch (s->target) {
 		case V4L2_SEL_TGT_CROP:
 			/* Only support crop from (0,0) */
@@ -1891,7 +1981,6 @@ static int vidioc_s_selection(struct file *file, void *priv,
 		}
 		break;
 	case ISP:
-		break;
 	case DEINTERLACE:
 		if (s->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
 			switch (s->target) {
@@ -1929,6 +2018,17 @@ static int vidioc_s_selection(struct file *file, void *priv,
 		}
 	case NUM_ROLES:
 		break;
+	}
+
+	if (!port)
+		return 0;
+
+	setup_mmal_port_format(ctx, q_data, port);
+	ret = vchiq_mmal_port_set_format(ctx->dev->instance, port);
+	if (ret) {
+		v4l2_err(&ctx->dev->v4l2_dev, "%s: Failed vchiq_mmal_port_set_format on port, ret %d\n",
+			 __func__, ret);
+		return -EINVAL;
 	}
 
 	return 0;
@@ -2099,6 +2199,12 @@ static int bcm2835_codec_set_level_profile(struct bcm2835_codec_ctx *ctx,
 		case V4L2_MPEG_VIDEO_H264_LEVEL_4_2:
 			param.level = MMAL_VIDEO_LEVEL_H264_42;
 			break;
+		case V4L2_MPEG_VIDEO_H264_LEVEL_5_0:
+			param.level = MMAL_VIDEO_LEVEL_H264_5;
+			break;
+		case V4L2_MPEG_VIDEO_H264_LEVEL_5_1:
+			param.level = MMAL_VIDEO_LEVEL_H264_51;
+			break;
 		default:
 			/* Should never get here */
 			break;
@@ -2118,6 +2224,9 @@ static int bcm2835_codec_s_ctrl(struct v4l2_ctrl *ctrl)
 	struct bcm2835_codec_ctx *ctx =
 		container_of(ctrl->handler, struct bcm2835_codec_ctx, hdl);
 	int ret = 0;
+
+	if (ctrl->flags & V4L2_CTRL_FLAG_READ_ONLY)
+		return 0;
 
 	switch (ctrl->id) {
 	case V4L2_CID_MPEG_VIDEO_BITRATE:
@@ -2178,6 +2287,17 @@ static int bcm2835_codec_s_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 
 	case V4L2_CID_MPEG_VIDEO_H264_I_PERIOD:
+		/*
+		 * Incorrect initial implementation meant that H264_I_PERIOD
+		 * was implemented to control intra-I period. As the MMAL
+		 * encoder never produces I-frames that aren't IDR frames, it
+		 * should actually have been GOP_SIZE.
+		 * Support both controls, but writing to H264_I_PERIOD will
+		 * update GOP_SIZE.
+		 */
+		__v4l2_ctrl_s_ctrl(ctx->gop_size, ctrl->val);
+	fallthrough;
+	case V4L2_CID_MPEG_VIDEO_GOP_SIZE:
 		if (!ctx->component)
 			break;
 
@@ -2259,9 +2379,23 @@ static int bcm2835_codec_s_ctrl(struct v4l2_ctrl *ctrl)
 						    sizeof(u32_value));
 		break;
 	}
+	case V4L2_CID_MPEG_VIDEO_B_FRAMES:
+		ret = 0;
+		break;
+
+	case V4L2_CID_JPEG_COMPRESSION_QUALITY:
+		if (!ctx->component)
+			break;
+
+		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
+						    &ctx->component->output[0],
+						    MMAL_PARAMETER_JPEG_Q_FACTOR,
+						    &ctrl->val,
+						    sizeof(ctrl->val));
+		break;
 
 	default:
-		v4l2_err(&ctx->dev->v4l2_dev, "Invalid control\n");
+		v4l2_err(&ctx->dev->v4l2_dev, "Invalid control %08x\n", ctrl->id);
 		return -EINVAL;
 	}
 
@@ -2355,11 +2489,6 @@ static int vidioc_decoder_cmd(struct file *file, void *priv,
 static int vidioc_try_encoder_cmd(struct file *file, void *priv,
 				  struct v4l2_encoder_cmd *cmd)
 {
-	struct bcm2835_codec_ctx *ctx = file2ctx(file);
-
-	if (ctx->dev->role != ENCODE)
-		return -EINVAL;
-
 	switch (cmd->cmd) {
 	case V4L2_ENC_CMD_STOP:
 		break;
@@ -2425,6 +2554,7 @@ static int vidioc_encoder_cmd(struct file *file, void *priv,
 static int vidioc_enum_framesizes(struct file *file, void *fh,
 				  struct v4l2_frmsizeenum *fsize)
 {
+	struct bcm2835_codec_ctx *ctx = file2ctx(file);
 	struct bcm2835_codec_fmt *fmt;
 
 	fmt = find_format_pix_fmt(fsize->pixel_format, file2ctx(file)->dev,
@@ -2443,10 +2573,10 @@ static int vidioc_enum_framesizes(struct file *file, void *fh,
 	fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
 
 	fsize->stepwise.min_width = MIN_W;
-	fsize->stepwise.max_width = MAX_W;
+	fsize->stepwise.max_width = ctx->dev->max_w;
 	fsize->stepwise.step_width = 2;
 	fsize->stepwise.min_height = MIN_H;
-	fsize->stepwise.max_height = MAX_H;
+	fsize->stepwise.max_height = ctx->dev->max_h;
 	fsize->stepwise.step_height = 2;
 
 	return 0;
@@ -2560,6 +2690,20 @@ static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
 					      MMAL_PARAMETER_IMAGE_EFFECT_PARAMETERS,
 					      &params,
 					      sizeof(params));
+
+	} else if (dev->role == ENCODE_IMAGE) {
+		enable = 0;
+		vchiq_mmal_port_parameter_set(dev->instance,
+					      &ctx->component->control,
+					      MMAL_PARAMETER_EXIF_DISABLE,
+					      &enable,
+					      sizeof(enable));
+		enable = 1;
+		vchiq_mmal_port_parameter_set(dev->instance,
+					      &ctx->component->output[0],
+						  MMAL_PARAMETER_JPEG_IJG_SCALING,
+					      &enable,
+					      sizeof(enable));
 	}
 
 	setup_mmal_port_format(ctx, &ctx->q_data[V4L2_M2M_SRC],
@@ -2588,7 +2732,7 @@ static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
 		goto destroy_component;
 	}
 
-	if (dev->role == ENCODE) {
+	if (dev->role == ENCODE || dev->role == ENCODE_IMAGE) {
 		u32 param = 1;
 
 		if (ctx->q_data[V4L2_M2M_SRC].sizeimage <
@@ -2597,27 +2741,29 @@ static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
 				 ctx->q_data[V4L2_M2M_SRC].sizeimage,
 				 ctx->component->output[0].minimum_buffer.size);
 
-		/* Enable SPS Timing header so framerate information is encoded
-		 * in the H264 header.
-		 */
-		vchiq_mmal_port_parameter_set(ctx->dev->instance,
-					      &ctx->component->output[0],
-					      MMAL_PARAMETER_VIDEO_ENCODE_SPS_TIMING,
-					      &param, sizeof(param));
+		if (dev->role == ENCODE) {
+			/* Enable SPS Timing header so framerate information is encoded
+			 * in the H264 header.
+			 */
+			vchiq_mmal_port_parameter_set(ctx->dev->instance,
+						      &ctx->component->output[0],
+						      MMAL_PARAMETER_VIDEO_ENCODE_SPS_TIMING,
+						      &param, sizeof(param));
 
-		/* Enable inserting headers into the first frame */
-		vchiq_mmal_port_parameter_set(ctx->dev->instance,
-					      &ctx->component->control,
-					      MMAL_PARAMETER_VIDEO_ENCODE_HEADERS_WITH_FRAME,
-					      &param, sizeof(param));
-		/*
-		 * Avoid fragmenting the buffers over multiple frames (unless
-		 * the frame is bigger than the whole buffer)
-		 */
-		vchiq_mmal_port_parameter_set(ctx->dev->instance,
-					      &ctx->component->control,
-					      MMAL_PARAMETER_MINIMISE_FRAGMENTATION,
-					      &param, sizeof(param));
+			/* Enable inserting headers into the first frame */
+			vchiq_mmal_port_parameter_set(ctx->dev->instance,
+						      &ctx->component->control,
+						      MMAL_PARAMETER_VIDEO_ENCODE_HEADERS_WITH_FRAME,
+						      &param, sizeof(param));
+			/*
+			 * Avoid fragmenting the buffers over multiple frames (unless
+			 * the frame is bigger than the whole buffer)
+			 */
+			vchiq_mmal_port_parameter_set(ctx->dev->instance,
+						      &ctx->component->control,
+						      MMAL_PARAMETER_MINIMISE_FRAGMENTATION,
+						      &param, sizeof(param));
+		}
 	} else {
 		if (ctx->q_data[V4L2_M2M_DST].sizeimage <
 			ctx->component->output[0].minimum_buffer.size)
@@ -2737,7 +2883,7 @@ static int bcm2835_codec_buf_prepare(struct vb2_buffer *vb)
 	}
 
 	if (vb2_plane_size(vb, 0) < q_data->sizeimage) {
-		v4l2_err(&ctx->dev->v4l2_dev, "%s data will not fit into plane (%lu < %lu)\n",
+		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s data will not fit into plane (%lu < %lu)\n",
 			 __func__, vb2_plane_size(vb, 0),
 			 (long)q_data->sizeimage);
 		return -EINVAL;
@@ -3068,6 +3214,96 @@ static int queue_init(void *priv, struct vb2_queue *src_vq,
 	return vb2_queue_init(dst_vq);
 }
 
+static void dec_add_profile_ctrls(struct bcm2835_codec_dev *const dev,
+				  struct v4l2_ctrl_handler *const hdl)
+{
+	struct v4l2_ctrl *ctrl;
+	unsigned int i;
+	const struct bcm2835_codec_fmt_list *const list = &dev->supported_fmts[0];
+
+	for (i = 0; i < list->num_entries; ++i) {
+		switch (list->list[i].fourcc) {
+		case V4L2_PIX_FMT_H264:
+			ctrl = v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
+						      V4L2_CID_MPEG_VIDEO_H264_LEVEL,
+						      V4L2_MPEG_VIDEO_H264_LEVEL_4_2,
+						      ~(BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1_0) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1B) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1_1) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1_2) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1_3) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_2_0) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_2_1) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_2_2) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_3_0) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_3_1) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_3_2) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_0) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_1) |
+							BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_2)),
+						       V4L2_MPEG_VIDEO_H264_LEVEL_4_0);
+			ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+			ctrl = v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
+						      V4L2_CID_MPEG_VIDEO_H264_PROFILE,
+						      V4L2_MPEG_VIDEO_H264_PROFILE_HIGH,
+						      ~(BIT(V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE) |
+							BIT(V4L2_MPEG_VIDEO_H264_PROFILE_CONSTRAINED_BASELINE) |
+							BIT(V4L2_MPEG_VIDEO_H264_PROFILE_MAIN) |
+							BIT(V4L2_MPEG_VIDEO_H264_PROFILE_HIGH)),
+						       V4L2_MPEG_VIDEO_H264_PROFILE_HIGH);
+			ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+			break;
+		case V4L2_PIX_FMT_MPEG2:
+			ctrl = v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
+						      V4L2_CID_MPEG_VIDEO_MPEG2_LEVEL,
+						      V4L2_MPEG_VIDEO_MPEG2_LEVEL_HIGH,
+						      ~(BIT(V4L2_MPEG_VIDEO_MPEG2_LEVEL_LOW) |
+							BIT(V4L2_MPEG_VIDEO_MPEG2_LEVEL_MAIN) |
+							BIT(V4L2_MPEG_VIDEO_MPEG2_LEVEL_HIGH_1440) |
+							BIT(V4L2_MPEG_VIDEO_MPEG2_LEVEL_HIGH)),
+						      V4L2_MPEG_VIDEO_MPEG2_LEVEL_MAIN);
+			ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+			ctrl = v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
+						      V4L2_CID_MPEG_VIDEO_MPEG2_PROFILE,
+						      V4L2_MPEG_VIDEO_MPEG2_PROFILE_MAIN,
+						      ~(BIT(V4L2_MPEG_VIDEO_MPEG2_PROFILE_SIMPLE) |
+							BIT(V4L2_MPEG_VIDEO_MPEG2_PROFILE_MAIN)),
+						      V4L2_MPEG_VIDEO_MPEG2_PROFILE_MAIN);
+			ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+			break;
+		case V4L2_PIX_FMT_MPEG4:
+			ctrl = v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
+						      V4L2_CID_MPEG_VIDEO_MPEG4_LEVEL,
+						      V4L2_MPEG_VIDEO_MPEG4_LEVEL_5,
+						      ~(BIT(V4L2_MPEG_VIDEO_MPEG4_LEVEL_0) |
+							BIT(V4L2_MPEG_VIDEO_MPEG4_LEVEL_0B) |
+							BIT(V4L2_MPEG_VIDEO_MPEG4_LEVEL_1) |
+							BIT(V4L2_MPEG_VIDEO_MPEG4_LEVEL_2) |
+							BIT(V4L2_MPEG_VIDEO_MPEG4_LEVEL_3) |
+							BIT(V4L2_MPEG_VIDEO_MPEG4_LEVEL_3B) |
+							BIT(V4L2_MPEG_VIDEO_MPEG4_LEVEL_4) |
+							BIT(V4L2_MPEG_VIDEO_MPEG4_LEVEL_5)),
+						      V4L2_MPEG_VIDEO_MPEG4_LEVEL_4);
+			ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+			ctrl = v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
+						      V4L2_CID_MPEG_VIDEO_MPEG4_PROFILE,
+						      V4L2_MPEG_VIDEO_MPEG4_PROFILE_ADVANCED_SIMPLE,
+						      ~(BIT(V4L2_MPEG_VIDEO_MPEG4_PROFILE_SIMPLE) |
+							BIT(V4L2_MPEG_VIDEO_MPEG4_PROFILE_ADVANCED_SIMPLE)),
+						      V4L2_MPEG_VIDEO_MPEG4_PROFILE_ADVANCED_SIMPLE);
+			ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+			break;
+		/* No profiles defined by V4L2 */
+		case V4L2_PIX_FMT_H263:
+		case V4L2_PIX_FMT_JPEG:
+		case V4L2_PIX_FMT_MJPEG:
+		case V4L2_PIX_FMT_VC1_ANNEX_G:
+		default:
+			break;
+		}
+	}
+}
+
 /*
  * File operations
  */
@@ -3095,7 +3331,7 @@ static int bcm2835_codec_open(struct file *file)
 	ctx->q_data[V4L2_M2M_SRC].crop_height = DEFAULT_HEIGHT;
 	ctx->q_data[V4L2_M2M_SRC].height = DEFAULT_HEIGHT;
 	ctx->q_data[V4L2_M2M_SRC].bytesperline =
-			get_bytesperline(DEFAULT_WIDTH,
+			get_bytesperline(DEFAULT_WIDTH, DEFAULT_HEIGHT,
 					 ctx->q_data[V4L2_M2M_SRC].fmt,
 					 dev->role);
 	ctx->q_data[V4L2_M2M_SRC].sizeimage =
@@ -3109,7 +3345,7 @@ static int bcm2835_codec_open(struct file *file)
 	ctx->q_data[V4L2_M2M_DST].crop_height = DEFAULT_HEIGHT;
 	ctx->q_data[V4L2_M2M_DST].height = DEFAULT_HEIGHT;
 	ctx->q_data[V4L2_M2M_DST].bytesperline =
-			get_bytesperline(DEFAULT_WIDTH,
+			get_bytesperline(DEFAULT_WIDTH, DEFAULT_HEIGHT,
 					 ctx->q_data[V4L2_M2M_DST].fmt,
 					 dev->role);
 	ctx->q_data[V4L2_M2M_DST].sizeimage =
@@ -3136,7 +3372,7 @@ static int bcm2835_codec_open(struct file *file)
 	case ENCODE:
 	{
 		/* Encode controls */
-		v4l2_ctrl_handler_init(hdl, 11);
+		v4l2_ctrl_handler_init(hdl, 13);
 
 		v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
 				       V4L2_CID_MPEG_VIDEO_BITRATE_MODE,
@@ -3160,7 +3396,7 @@ static int bcm2835_codec_open(struct file *file)
 				  1, 60);
 		v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
 				       V4L2_CID_MPEG_VIDEO_H264_LEVEL,
-				       V4L2_MPEG_VIDEO_H264_LEVEL_4_2,
+				       V4L2_MPEG_VIDEO_H264_LEVEL_5_1,
 				       ~(BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1_0) |
 					 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1B) |
 					 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_1_1) |
@@ -3174,7 +3410,9 @@ static int bcm2835_codec_open(struct file *file)
 					 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_3_2) |
 					 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_0) |
 					 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_1) |
-					 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_2)),
+					 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_4_2) |
+					 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_5_0) |
+					 BIT(V4L2_MPEG_VIDEO_H264_LEVEL_5_1)),
 				       V4L2_MPEG_VIDEO_H264_LEVEL_4_0);
 		v4l2_ctrl_new_std_menu(hdl, &bcm2835_codec_ctrl_ops,
 				       V4L2_CID_MPEG_VIDEO_H264_PROFILE,
@@ -3195,6 +3433,13 @@ static int bcm2835_codec_open(struct file *file)
 		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
 				  V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME,
 				  0, 0, 0, 0);
+		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
+				  V4L2_CID_MPEG_VIDEO_B_FRAMES,
+				  0, 0,
+				  1, 0);
+		ctx->gop_size = v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
+						  V4L2_CID_MPEG_VIDEO_GOP_SIZE,
+						  0, 0x7FFFFFFF, 1, 60);
 		if (hdl->error) {
 			rc = hdl->error;
 			goto free_ctrl_handler;
@@ -3205,11 +3450,12 @@ static int bcm2835_codec_open(struct file *file)
 	break;
 	case DECODE:
 	{
-		v4l2_ctrl_handler_init(hdl, 1);
+		v4l2_ctrl_handler_init(hdl, 1 + dev->supported_fmts[0].num_entries * 2);
 
 		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
 				  V4L2_CID_MIN_BUFFERS_FOR_CAPTURE,
 				  1, 1, 1, 1);
+		dec_add_profile_ctrls(dev, hdl);
 		if (hdl->error) {
 			rc = hdl->error;
 			goto free_ctrl_handler;
@@ -3239,6 +3485,23 @@ static int bcm2835_codec_open(struct file *file)
 	case DEINTERLACE:
 	{
 		v4l2_ctrl_handler_init(hdl, 0);
+	}
+	break;
+	case ENCODE_IMAGE:
+	{
+		/* Encode image controls */
+		v4l2_ctrl_handler_init(hdl, 1);
+
+		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
+				  V4L2_CID_JPEG_COMPRESSION_QUALITY,
+				  1, 100,
+				  1, 80);
+		if (hdl->error) {
+			rc = hdl->error;
+			goto free_ctrl_handler;
+		}
+		ctx->fh.ctrl_handler = hdl;
+		v4l2_ctrl_handler_setup(hdl);
 	}
 	break;
 	case NUM_ROLES:
@@ -3485,6 +3748,9 @@ static int bcm2835_codec_create(struct bcm2835_codec_driver *drv,
 	if (ret)
 		goto vchiq_finalise;
 
+	dev->max_w = MAX_W_CODEC;
+	dev->max_h = MAX_H_CODEC;
+
 	switch (role) {
 	case DECODE:
 		v4l2_disable_ioctl(vfd, VIDIOC_ENCODER_CMD);
@@ -3501,24 +3767,28 @@ static int bcm2835_codec_create(struct bcm2835_codec_driver *drv,
 		video_nr = encode_video_nr;
 		break;
 	case ISP:
-		v4l2_disable_ioctl(vfd, VIDIOC_ENCODER_CMD);
-		v4l2_disable_ioctl(vfd, VIDIOC_TRY_ENCODER_CMD);
 		v4l2_disable_ioctl(vfd, VIDIOC_DECODER_CMD);
 		v4l2_disable_ioctl(vfd, VIDIOC_TRY_DECODER_CMD);
 		v4l2_disable_ioctl(vfd, VIDIOC_S_PARM);
 		v4l2_disable_ioctl(vfd, VIDIOC_G_PARM);
 		function = MEDIA_ENT_F_PROC_VIDEO_SCALER;
 		video_nr = isp_video_nr;
+		dev->max_w = MAX_W_ISP;
+		dev->max_h = MAX_H_ISP;
 		break;
 	case DEINTERLACE:
-		v4l2_disable_ioctl(vfd, VIDIOC_ENCODER_CMD);
-		v4l2_disable_ioctl(vfd, VIDIOC_TRY_ENCODER_CMD);
 		v4l2_disable_ioctl(vfd, VIDIOC_DECODER_CMD);
 		v4l2_disable_ioctl(vfd, VIDIOC_TRY_DECODER_CMD);
 		v4l2_disable_ioctl(vfd, VIDIOC_S_PARM);
 		v4l2_disable_ioctl(vfd, VIDIOC_G_PARM);
 		function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER;
 		video_nr = deinterlace_video_nr;
+		break;
+	case ENCODE_IMAGE:
+		v4l2_disable_ioctl(vfd, VIDIOC_DECODER_CMD);
+		v4l2_disable_ioctl(vfd, VIDIOC_TRY_DECODER_CMD);
+		function = MEDIA_ENT_F_PROC_VIDEO_ENCODER;
+		video_nr = encode_image_nr;
 		break;
 	default:
 		ret = -EINVAL;
@@ -3619,6 +3889,10 @@ static int bcm2835_codec_probe(struct platform_device *pdev)
 	if (ret)
 		goto out;
 
+	ret = bcm2835_codec_create(drv, &drv->encode_image, ENCODE_IMAGE);
+	if (ret)
+		goto out;
+
 	/* Register the media device node */
 	if (media_device_register(mdev) < 0)
 		goto out;
@@ -3628,6 +3902,10 @@ static int bcm2835_codec_probe(struct platform_device *pdev)
 	return 0;
 
 out:
+	if (drv->encode_image) {
+		bcm2835_codec_destroy(drv->encode_image);
+		drv->encode_image = NULL;
+	}
 	if (drv->deinterlace) {
 		bcm2835_codec_destroy(drv->deinterlace);
 		drv->deinterlace = NULL;
@@ -3652,6 +3930,8 @@ static int bcm2835_codec_remove(struct platform_device *pdev)
 	struct bcm2835_codec_driver *drv = platform_get_drvdata(pdev);
 
 	media_device_unregister(&drv->mdev);
+
+	bcm2835_codec_destroy(drv->encode_image);
 
 	bcm2835_codec_destroy(drv->deinterlace);
 

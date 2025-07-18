@@ -29,7 +29,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-/**
+/*
  * Raspberry Pi 7" touchscreen panel driver.
  *
  * The 7" touchscreen consists of a DPI LCD panel, a Toshiba
@@ -45,6 +45,7 @@
 #include <linux/err.h>
 #include <linux/fb.h>
 #include <linux/i2c.h>
+#include <linux/media-bus-format.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -298,6 +299,13 @@ static int rpi_touchscreen_prepare(struct drm_panel *panel)
 	struct rpi_touchscreen *ts = panel_to_ts(panel);
 	int i, data;
 
+	/*
+	 * Power up the Toshiba bridge. The Atmel device can misbehave
+	 * over I2C for a few ms after writes to REG_POWERON (including the
+	 * write in rpi_touchscreen_disable()), so sleep before and after.
+	 * Also to ensure that the bridge has been off for at least 100ms.
+	 */
+	msleep(100);
 	rpi_touchscreen_i2c_write(ts, REG_POWERON, 1);
 	usleep_range(20000, 25000);
 	/* Wait for nPWRDWN to go low to indicate poweron is done. */
@@ -430,6 +438,7 @@ static int rpi_touchscreen_probe(struct i2c_client *i2c,
 
 	/* Turn off at boot, so we can cleanly sequence powering on. */
 	rpi_touchscreen_i2c_write(ts, REG_POWERON, 0);
+	usleep_range(20000, 25000);
 
 	/* Look up the DSI host.  It needs to probe before we do. */
 	endpoint = of_graph_get_next_endpoint(dev->of_node, NULL);
@@ -475,7 +484,7 @@ error:
 	return -ENODEV;
 }
 
-static int rpi_touchscreen_remove(struct i2c_client *i2c)
+static void rpi_touchscreen_remove(struct i2c_client *i2c)
 {
 	struct rpi_touchscreen *ts = i2c_get_clientdata(i2c);
 
@@ -484,8 +493,6 @@ static int rpi_touchscreen_remove(struct i2c_client *i2c)
 	drm_panel_remove(&ts->base);
 
 	mipi_dsi_device_unregister(ts->dsi);
-
-	return 0;
 }
 
 static int rpi_touchscreen_dsi_probe(struct mipi_dsi_device *dsi)

@@ -12,7 +12,7 @@
 	model = "Raspberry Pi 3 Model B+";
 
 	chosen {
-		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_compat_alsa=0 snd_bcm2835.enable_hdmi=1";
+		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_headphones=0";
 	};
 
 	aliases {
@@ -23,6 +23,74 @@
 };
 
 &gpio {
+	/*
+	 * Taken from rpi_SCH_3bplus_1p0_reduced.pdf and
+	 * the official GPU firmware DT blob.
+	 *
+	 * Legend:
+	 * "NC" = not connected (no rail from the SoC)
+	 * "FOO" = GPIO line named "FOO" on the schematic
+	 * "FOO_N" = GPIO line named "FOO" on schematic, active low
+	 */
+	gpio-line-names = "ID_SDA",
+			  "ID_SCL",
+			  "SDA1",
+			  "SCL1",
+			  "GPIO_GCLK",
+			  "GPIO5",
+			  "GPIO6",
+			  "SPI_CE1_N",
+			  "SPI_CE0_N",
+			  "SPI_MISO",
+			  "SPI_MOSI",
+			  "SPI_SCLK",
+			  "GPIO12",
+			  "GPIO13",
+			  /* Serial port */
+			  "TXD1",
+			  "RXD1",
+			  "GPIO16",
+			  "GPIO17",
+			  "GPIO18",
+			  "GPIO19",
+			  "GPIO20",
+			  "GPIO21",
+			  "GPIO22",
+			  "GPIO23",
+			  "GPIO24",
+			  "GPIO25",
+			  "GPIO26",
+			  "GPIO27",
+			  "HDMI_HPD_N",
+			  "STATUS_LED_G",
+			  /* Used by BT module */
+			  "CTS0",
+			  "RTS0",
+			  "TXD0",
+			  "RXD0",
+			  /* Used by Wifi */
+			  "SD1_CLK",
+			  "SD1_CMD",
+			  "SD1_DATA0",
+			  "SD1_DATA1",
+			  "SD1_DATA2",
+			  "SD1_DATA3",
+			  "PWM0_OUT",
+			  "PWM1_OUT",
+			  "ETH_CLK",
+			  "WIFI_CLK",
+			  "SDA0",
+			  "SCL0",
+			  "SMPS_SCL",
+			  "SMPS_SDA",
+			  /* Used by SD Card */
+			  "SD_CLK_R",
+			  "SD_CMD_R",
+			  "SD_DATA0_R",
+			  "SD_DATA1_R",
+			  "SD_DATA2_R",
+			  "SD_DATA3_R";
+
 	spi0_pins: spi0_pins {
 		brcm,pins = <9 10 11>;
 		brcm,function = <4>; /* alt0 */
@@ -72,9 +140,16 @@
 		brcm,pull;
 	};
 
+	uart1_bt_pins: uart1_bt_pins {
+		brcm,pins = <32 33 30 31>;
+		brcm,function = <BCM2835_FSEL_ALT5>; /* alt5=UART1 */
+		brcm,pull = <0 2 2 0>;
+	};
+
 	audio_pins: audio_pins {
 		brcm,pins = <40 41>;
 		brcm,function = <4>;
+		brcm,pull = <0>;
 	};
 };
 
@@ -97,6 +172,14 @@
 		compatible = "raspberrypi,firmware-gpio";
 		gpio-controller;
 		#gpio-cells = <2>;
+		gpio-line-names = "BT_ON",
+				  "WL_ON",
+				  "PWR_LED_R",
+				  "LAN_RUN",
+				  "NC",
+				  "CAM_GPIO0",
+				  "CAM_GPIO1",
+				  "NC";
 		status = "okay";
 	};
 };
@@ -156,13 +239,14 @@
 
 &leds {
 	act_led: led-act {
-		label = "led0";
+		default-state = "off";
 		linux,default-trigger = "mmc0";
 		gpios = <&gpio 29 0>;
 	};
 
 	pwr_led: led-pwr {
-		label = "led1";
+		label = "PWR";
+		default-state = "off";
 		linux,default-trigger = "default-on";
 		gpios = <&expgpio 2 GPIO_ACTIVE_LOW>;
 	};
@@ -172,7 +256,7 @@
 	hpd-gpios = <&gpio 28 GPIO_ACTIVE_LOW>;
 };
 
-&audio {
+&vchiq {
 	pinctrl-names = "default";
 	pinctrl-0 = <&audio_pins>;
 };
@@ -190,8 +274,13 @@
 cam0_reg: &cam_dummy_reg {
 };
 
+i2c_csi_dsi0: &i2c0 {
+};
+
 / {
 	__overrides__ {
+		audio = <&chosen>,"bootargs{on='snd_bcm2835.enable_headphones=1 snd_bcm2835.enable_hdmi=1',off='snd_bcm2835.enable_headphones=0 snd_bcm2835.enable_hdmi=0'}";
+
 		act_led_gpio = <&act_led>,"gpios:4";
 		act_led_activelow = <&act_led>,"gpios:8";
 		act_led_trigger = <&act_led>,"linux,default-trigger";

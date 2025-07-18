@@ -14,11 +14,13 @@
 #include <linux/workqueue.h>
 
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_debugfs.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_managed.h>
@@ -306,19 +308,6 @@ out:
 	return ret;
 }
 
-static struct drm_gem_object *gud_gem_create_object(struct drm_device *dev, size_t size)
-{
-	struct drm_gem_shmem_object *shmem;
-
-	shmem = kzalloc(sizeof(*shmem), GFP_KERNEL);
-	if (!shmem)
-		return NULL;
-
-	shmem->map_cached = true;
-
-	return &shmem->base;
-}
-
 /*
  * FIXME: Dma-buf sharing requires DMA support by the importing device.
  *        This function is a workaround to make USB devices work as well.
@@ -376,7 +365,6 @@ static void gud_debugfs_init(struct drm_minor *minor)
 static const struct drm_simple_display_pipe_funcs gud_pipe_funcs = {
 	.check      = gud_pipe_check,
 	.update	    = gud_pipe_update,
-	.prepare_fb = drm_gem_fb_simple_display_pipe_prepare_fb,
 };
 
 static const struct drm_mode_config_funcs gud_mode_config_funcs = {
@@ -392,11 +380,10 @@ static const u64 gud_pipe_modifiers[] = {
 
 DEFINE_DRM_GEM_FOPS(gud_fops);
 
-static struct drm_driver gud_drm_driver = {
+static const struct drm_driver gud_drm_driver = {
 	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 	.fops			= &gud_fops,
 	DRM_GEM_SHMEM_DRIVER_OPS,
-	.gem_create_object	= gud_gem_create_object,
 	.gem_prime_import	= gud_gem_prime_import,
 	.debugfs_init		= gud_debugfs_init,
 
@@ -537,7 +524,13 @@ static int gud_probe(struct usb_interface *intf, const struct usb_device_id *id)
 		switch (format) {
 		case GUD_DRM_FORMAT_R1:
 			fallthrough;
+		case DRM_FORMAT_R8:
+			fallthrough;
 		case GUD_DRM_FORMAT_XRGB1111:
+			fallthrough;
+		case DRM_FORMAT_RGB332:
+			fallthrough;
+		case DRM_FORMAT_RGB888:
 			if (!xrgb8888_emulation_format)
 				xrgb8888_emulation_format = info;
 			break;

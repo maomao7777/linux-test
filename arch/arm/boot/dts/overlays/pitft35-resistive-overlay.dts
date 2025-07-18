@@ -68,7 +68,6 @@
 				reg = <1>;
 
 				spi-max-frequency = <500000>;
-				irq-gpio = <&gpio 24 0x2>; /* IRQF_TRIGGER_FALLING */
 				interrupts = <24 2>; /* high-to-low edge triggered */
 				interrupt-parent = <&gpio>;
 				interrupt-controller;
@@ -102,7 +101,7 @@
 	fragment@5 {
 		target-path = "/soc";
 		__overlay__ {
-			backlight {
+			backlight: backlight {
 				compatible = "gpio-backlight";
 				gpios = <&stmpe_gpio 2 0>;
 				default-on;
@@ -112,8 +111,11 @@
 
 	__overrides__ {
 		speed =   <&pitft>,"spi-max-frequency:0";
-		rotate =  <&pitft>,"rotate:0";
+		rotate =  <&pitft>,"rotate:0", /* fbtft */
+			  <&pitft>,"rotation:0"; /* drm */
 		fps =     <&pitft>,"fps:0";
 		debug =   <&pitft>,"debug:0";
+		drm =     <&pitft>,"compatible=adafruit,yx350hv15",
+			  <&pitft>,"backlight:0=",<&backlight>;
 	};
 };

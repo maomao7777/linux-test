@@ -49,7 +49,7 @@
 			#size-cells = <0>;
 
 			pitft: pitft@0{
-				compatible = "ilitek,ili9340";
+				compatible = "ilitek,ili9340", "multi-inno,mi0283qt";
 				reg = <0>;
 				pinctrl-names = "default";
 				pinctrl-0 = <&pitft_pins>;
@@ -68,7 +68,6 @@
 				reg = <1>;
 
 				spi-max-frequency = <500000>;
-				irq-gpio = <&gpio 24 0x2>; /* IRQF_TRIGGER_FALLING */
 				interrupts = <24 2>; /* high-to-low edge triggered */
 				interrupt-parent = <&gpio>;
 				interrupt-controller;
@@ -112,8 +111,10 @@
 
 	__overrides__ {
 		speed =   <&pitft>,"spi-max-frequency:0";
-		rotate =  <&pitft>,"rotate:0";
+		rotate =  <&pitft>,"rotate:0", /* fbtft */
+			  <&pitft>,"rotation:0"; /* drm */
 		fps =     <&pitft>,"fps:0";
 		debug =   <&pitft>,"debug:0";
+		drm =     <&pitft>,"compatible=multi-inno,mi0283qt";
 	};
 };

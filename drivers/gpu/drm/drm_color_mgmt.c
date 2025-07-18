@@ -82,6 +82,10 @@
  *	driver boot-up state too. Drivers can access this blob through
  *	&drm_crtc_state.gamma_lut.
  *
+ *	Note that for mostly historical reasons stemming from Xorg heritage,
+ *	this is also used to store the color map (also sometimes color lut, CLUT
+ *	or color palette) for indexed formats like DRM_FORMAT_C8.
+ *
  * “GAMMA_LUT_SIZE”:
  *	Unsigned range property to give the size of the lookup table to be set
  *	on the GAMMA_LUT property (the size depends on the underlying hardware).
@@ -91,18 +95,18 @@
  *
  * There is also support for a legacy gamma table, which is set up by calling
  * drm_mode_crtc_set_gamma_size(). The DRM core will then alias the legacy gamma
- * ramp with "GAMMA_LUT".
+ * ramp with "GAMMA_LUT" or, if that is unavailable, "DEGAMMA_LUT".
  *
  * Support for different non RGB color encodings is controlled through
  * &drm_plane specific COLOR_ENCODING and COLOR_RANGE properties. They
  * are set up by calling drm_plane_create_color_properties().
  *
- * "COLOR_ENCODING"
+ * "COLOR_ENCODING":
  * 	Optional plane enum property to support different non RGB
  * 	color encodings. The driver can provide a subset of standard
  * 	enum values supported by the DRM plane.
  *
- * "COLOR_RANGE"
+ * "COLOR_RANGE":
  * 	Optional plane enum property to support different non RGB
  * 	color parameter ranges. The driver can provide a subset of
  * 	standard enum values supported by the DRM plane.
@@ -238,6 +242,7 @@ EXPORT_SYMBOL(drm_mode_crtc_set_gamma_size);
 static bool drm_crtc_supports_legacy_gamma(struct drm_crtc *crtc)
 {
 	u32 gamma_id = crtc->dev->mode_config.gamma_lut_property->base.id;
+	u32 degamma_id = crtc->dev->mode_config.degamma_lut_property->base.id;
 
 	if (!crtc->gamma_size)
 		return false;
@@ -245,7 +250,8 @@ static bool drm_crtc_supports_legacy_gamma(struct drm_crtc *crtc)
 	if (crtc->funcs->gamma_set)
 		return true;
 
-	return !!drm_mode_obj_find_prop_id(&crtc->base, gamma_id);
+	return !!(drm_mode_obj_find_prop_id(&crtc->base, gamma_id) ||
+		  drm_mode_obj_find_prop_id(&crtc->base, degamma_id));
 }
 
 /**
@@ -253,7 +259,7 @@ static bool drm_crtc_supports_legacy_gamma(struct drm_crtc *crtc)
  * @crtc: CRTC object
  * @red: red correction table
  * @green: green correction table
- * @blue: green correction table
+ * @blue: blue correction table
  * @size: size of the tables
  * @ctx: lock acquire context
  *
@@ -276,11 +282,21 @@ static int drm_crtc_legacy_gamma_set(struct drm_crtc *crtc,
 	struct drm_crtc_state *crtc_state;
 	struct drm_property_blob *blob;
 	struct drm_color_lut *blob_data;
+	u32 gamma_id = dev->mode_config.gamma_lut_property->base.id;
+	u32 degamma_id = dev->mode_config.degamma_lut_property->base.id;
+	bool use_gamma_lut;
 	int i, ret = 0;
 	bool replaced;
 
 	if (crtc->funcs->gamma_set)
 		return crtc->funcs->gamma_set(crtc, red, green, blue, size, ctx);
+
+	if (drm_mode_obj_find_prop_id(&crtc->base, gamma_id))
+		use_gamma_lut = true;
+	else if (drm_mode_obj_find_prop_id(&crtc->base, degamma_id))
+		use_gamma_lut = false;
+	else
+		return -ENODEV;
 
 	state = drm_atomic_state_alloc(crtc->dev);
 	if (!state)
@@ -311,12 +327,13 @@ static int drm_crtc_legacy_gamma_set(struct drm_crtc *crtc,
 	}
 
 	/* Set GAMMA_LUT and reset DEGAMMA_LUT and CTM */
-	replaced = drm_property_replace_blob(&crtc_state->degamma_lut, NULL);
+	replaced = drm_property_replace_blob(&crtc_state->degamma_lut,
+					     use_gamma_lut ? NULL : blob);
 	replaced |= drm_property_replace_blob(&crtc_state->ctm, NULL);
 	if (!crtc_state->gamma_lut || !crtc_state->gamma_lut->data ||
 	    memcmp(crtc_state->gamma_lut->data, blob_data, blob->length))
-		replaced |= drm_property_replace_blob(&crtc_state->gamma_lut, blob);
-
+		replaced |= drm_property_replace_blob(&crtc_state->gamma_lut,
+					      use_gamma_lut ? blob : NULL);
 	crtc_state->color_mgmt_changed |= replaced;
 
 	ret = drm_atomic_commit(state);
@@ -560,7 +577,7 @@ int drm_plane_create_color_properties(struct drm_plane *plane,
 		len++;
 	}
 
-	prop = drm_property_create_enum(dev, 0,	"COLOR_RANGE",
+	prop = drm_property_create_enum(dev, 0, "COLOR_RANGE",
 					enum_list, len);
 	if (!prop)
 		return -ENOMEM;
@@ -572,6 +589,42 @@ int drm_plane_create_color_properties(struct drm_plane *plane,
 	return 0;
 }
 EXPORT_SYMBOL(drm_plane_create_color_properties);
+
+/**
+ * drm_plane_create_chroma_siting_properties - chroma siting related plane properties
+ * @plane: plane object
+ *
+ * Create and attach plane specific CHROMA_SITING
+ * properties to @plane.
+ */
+int drm_plane_create_chroma_siting_properties(struct drm_plane *plane,
+						int32_t default_chroma_siting_h,
+						int32_t default_chroma_siting_v)
+{
+	struct drm_device *dev = plane->dev;
+	struct drm_property *prop;
+
+	prop = drm_property_create_range(dev, 0, "CHROMA_SITING_H",
+					0, 1<<16);
+	if (!prop)
+		return -ENOMEM;
+	plane->chroma_siting_h_property = prop;
+	drm_object_attach_property(&plane->base, prop, default_chroma_siting_h);
+
+	prop = drm_property_create_range(dev, 0, "CHROMA_SITING_V",
+					0, 1<<16);
+	if (!prop)
+		return -ENOMEM;
+	plane->chroma_siting_v_property = prop;
+	drm_object_attach_property(&plane->base, prop, default_chroma_siting_v);
+
+	if (plane->state) {
+		plane->state->chroma_siting_h = default_chroma_siting_h;
+		plane->state->chroma_siting_v = default_chroma_siting_v;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(drm_plane_create_chroma_siting_properties);
 
 /**
  * drm_color_lut_check - check validity of lookup table

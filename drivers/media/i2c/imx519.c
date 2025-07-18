@@ -36,10 +36,10 @@
 
 #define IMX519_XCLK_FREQ		24000000
 
-#define IMX519_DEFAULT_LINK_FREQ	493500000
+#define IMX519_DEFAULT_LINK_FREQ	408000000
 
-/* Pixel rate is fixed at 686MHz for all the modes */
-#define IMX519_PIXEL_RATE		686000000
+/* Pixel rate is fixed at 426MHz for all the modes */
+#define IMX519_PIXEL_RATE		426666667
 
 /* V_TIMING internal */
 #define IMX519_REG_FRAME_LENGTH		0x0340
@@ -52,7 +52,7 @@
 /* Exposure control */
 #define IMX519_REG_EXPOSURE		0x0202
 #define IMX519_EXPOSURE_OFFSET		32
-#define IMX519_EXPOSURE_MIN		1
+#define IMX519_EXPOSURE_MIN		20
 #define IMX519_EXPOSURE_STEP		1
 #define IMX519_EXPOSURE_DEFAULT		0x3e8
 #define IMX519_EXPOSURE_MAX		(IMX519_FRAME_LENGTH_MAX - \
@@ -94,7 +94,7 @@
 #define IMX519_TEST_PATTERN_GB_DEFAULT	0
 
 /* Embedded metadata stream structure */
-#define IMX519_EMBEDDED_LINE_WIDTH 16384
+#define IMX519_EMBEDDED_LINE_WIDTH (5820 * 3)
 #define IMX519_NUM_EMBEDDED_LINES 1
 
 enum pad_types {
@@ -145,7 +145,12 @@ struct imx519_mode {
 	struct imx519_reg_list reg_list;
 };
 
+static const s64 imx519_link_freq_menu[] = {
+	IMX519_DEFAULT_LINK_FREQ,
+};
+
 static const struct imx519_reg mode_common_regs[] = {
+	{0x0100, 0x00},
 	{0x0136, 0x18},
 	{0x0137, 0x00},
 	{0x3c7e, 0x01},
@@ -418,6 +423,7 @@ static const struct imx519_reg mode_common_regs[] = {
 	{0xae05, 0x03},
 	{0xbc1c, 0x08},
 	{0xbcf1, 0x02},
+	{0x38a3, 0x00},
 };
 
 /* 16 mpix 10fps */
@@ -426,8 +432,8 @@ static const struct imx519_reg mode_4656x3496_regs[] = {
 	{0x0112, 0x0a},
 	{0x0113, 0x0a},
 	{0x0114, 0x01},
-	{0x0342, 0x42},
-	{0x0343, 0x00},
+	{0x0342, 0x31},
+	{0x0343, 0x6a},
 	{0x0340, 0x0d},
 	{0x0341, 0xf4},
 	{0x0344, 0x00},
@@ -464,22 +470,30 @@ static const struct imx519_reg mode_4656x3496_regs[] = {
 	{0x034f, 0xa8},
 	{0x0301, 0x06},
 	{0x0303, 0x04},
-	{0x0305, 0x04},
+	{0x0305, 0x06},
 	{0x0306, 0x01},
-	{0x0307, 0x57},
+	{0x0307, 0x40},
 	{0x0309, 0x0a},
 	{0x030b, 0x02},
 	{0x030d, 0x04},
 	{0x030e, 0x01},
-	{0x030f, 0x49},
+	{0x030f, 0x10},
 	{0x0310, 0x01},
-	{0x0820, 0x07},
-	{0x0821, 0xb6},
+	{0x0820, 0x0a},
+	{0x0821, 0x20},
 	{0x0822, 0x00},
 	{0x0823, 0x00},
 	{0x3e20, 0x01},
-	{0x3e37, 0x00},
+	{0x3e37, 0x01},
 	{0x3e3b, 0x00},
+	{0x38a4, 0x00},
+	{0x38a5, 0x00},
+	{0x38a6, 0x00},
+	{0x38a7, 0x00},
+	{0x38a8, 0x01},
+	{0x38a9, 0x23},
+	{0x38aa, 0x01},
+	{0x38ab, 0x23},
 	{0x0106, 0x00},
 	{0x0b00, 0x00},
 	{0x3230, 0x00},
@@ -503,8 +517,8 @@ static const struct imx519_reg mode_3840x2160_regs[] = {
 	{0x0112, 0x0a},
 	{0x0113, 0x0a},
 	{0x0114, 0x01},
-	{0x0342, 0x38},
-	{0x0343, 0x70},
+	{0x0342, 0x28},
+	{0x0343, 0xf6},
 	{0x0340, 0x08},
 	{0x0341, 0xd4},
 	{0x0344, 0x01},
@@ -541,22 +555,30 @@ static const struct imx519_reg mode_3840x2160_regs[] = {
 	{0x034f, 0x70},
 	{0x0301, 0x06},
 	{0x0303, 0x04},
-	{0x0305, 0x04},
+	{0x0305, 0x06},
 	{0x0306, 0x01},
-	{0x0307, 0x57},
+	{0x0307, 0x40},
 	{0x0309, 0x0a},
 	{0x030b, 0x02},
 	{0x030d, 0x04},
 	{0x030e, 0x01},
-	{0x030f, 0x49},
+	{0x030f, 0x10},
 	{0x0310, 0x01},
-	{0x0820, 0x07},
-	{0x0821, 0xb6},
+	{0x0820, 0x0a},
+	{0x0821, 0x20},
 	{0x0822, 0x00},
 	{0x0823, 0x00},
 	{0x3e20, 0x01},
-	{0x3e37, 0x00},
+	{0x3e37, 0x01},
 	{0x3e3b, 0x00},
+	{0x38a4, 0x00},
+	{0x38a5, 0x00},
+	{0x38a6, 0x00},
+	{0x38a7, 0x00},
+	{0x38a8, 0x00},
+	{0x38a9, 0xf0},
+	{0x38aa, 0x00},
+	{0x38ab, 0xb4},
 	{0x0106, 0x00},
 	{0x0b00, 0x00},
 	{0x3230, 0x00},
@@ -580,10 +602,10 @@ static const struct imx519_reg mode_2328x1748_regs[] = {
 	{0x0112, 0x0a},
 	{0x0113, 0x0a},
 	{0x0114, 0x01},
-	{0x0342, 0x24},
-	{0x0343, 0x12},
-	{0x0340, 0x09},
-	{0x0341, 0xac},
+	{0x0342, 0x19},
+	{0x0343, 0x70},
+	{0x0340, 0x08},
+	{0x0341, 0x88},
 	{0x0344, 0x00},
 	{0x0345, 0x00},
 	{0x0346, 0x00},
@@ -598,8 +620,8 @@ static const struct imx519_reg mode_2328x1748_regs[] = {
 	{0x0900, 0x01},
 	{0x0901, 0x22},
 	{0x0902, 0x0a},
-	{0x3f4c, 0x01},
-	{0x3f4d, 0x01},
+	{0x3f4c, 0x05},
+	{0x3f4d, 0x03},
 	{0x4254, 0x7f},
 	{0x0401, 0x00},
 	{0x0404, 0x00},
@@ -618,22 +640,30 @@ static const struct imx519_reg mode_2328x1748_regs[] = {
 	{0x034f, 0xd4},
 	{0x0301, 0x06},
 	{0x0303, 0x04},
-	{0x0305, 0x04},
+	{0x0305, 0x06},
 	{0x0306, 0x01},
-	{0x0307, 0x57},
+	{0x0307, 0x40},
 	{0x0309, 0x0a},
 	{0x030b, 0x02},
 	{0x030d, 0x04},
 	{0x030e, 0x01},
-	{0x030f, 0x49},
+	{0x030f, 0x10},
 	{0x0310, 0x01},
-	{0x0820, 0x07},
-	{0x0821, 0xb6},
+	{0x0820, 0x0a},
+	{0x0821, 0x20},
 	{0x0822, 0x00},
 	{0x0823, 0x00},
 	{0x3e20, 0x01},
-	{0x3e37, 0x00},
+	{0x3e37, 0x01},
 	{0x3e3b, 0x00},
+	{0x38a4, 0x00},
+	{0x38a5, 0x00},
+	{0x38a6, 0x00},
+	{0x38a7, 0x00},
+	{0x38a8, 0x00},
+	{0x38a9, 0x91},
+	{0x38aa, 0x00},
+	{0x38ab, 0x91},
 	{0x0106, 0x00},
 	{0x0b00, 0x00},
 	{0x3230, 0x00},
@@ -657,8 +687,8 @@ static const struct imx519_reg mode_1920x1080_regs[] = {
 	{0x0112, 0x0a},
 	{0x0113, 0x0a},
 	{0x0114, 0x01},
-	{0x0342, 0x25},
-	{0x0343, 0xd9},
+	{0x0342, 0x17},
+	{0x0343, 0x8b},
 	{0x0340, 0x04},
 	{0x0341, 0x9c},
 	{0x0344, 0x01},
@@ -675,8 +705,8 @@ static const struct imx519_reg mode_1920x1080_regs[] = {
 	{0x0900, 0x01},
 	{0x0901, 0x22},
 	{0x0902, 0x0a},
-	{0x3f4c, 0x01},
-	{0x3f4d, 0x01},
+	{0x3f4c, 0x05},
+	{0x3f4d, 0x03},
 	{0x4254, 0x7f},
 	{0x0401, 0x00},
 	{0x0404, 0x00},
@@ -695,22 +725,30 @@ static const struct imx519_reg mode_1920x1080_regs[] = {
 	{0x034f, 0x38},
 	{0x0301, 0x06},
 	{0x0303, 0x04},
-	{0x0305, 0x04},
+	{0x0305, 0x06},
 	{0x0306, 0x01},
-	{0x0307, 0x57},
+	{0x0307, 0x40},
 	{0x0309, 0x0a},
 	{0x030b, 0x02},
 	{0x030d, 0x04},
 	{0x030e, 0x01},
-	{0x030f, 0x49},
+	{0x030f, 0x10},
 	{0x0310, 0x01},
-	{0x0820, 0x07},
-	{0x0821, 0xb6},
+	{0x0820, 0x0a},
+	{0x0821, 0x20},
 	{0x0822, 0x00},
 	{0x0823, 0x00},
 	{0x3e20, 0x01},
-	{0x3e37, 0x00},
+	{0x3e37, 0x01},
 	{0x3e3b, 0x00},
+	{0x38a4, 0x00},
+	{0x38a5, 0x00},
+	{0x38a6, 0x00},
+	{0x38a7, 0x00},
+	{0x38a8, 0x00},
+	{0x38a9, 0x78},
+	{0x38aa, 0x00},
+	{0x38ab, 0x5a},
 	{0x0106, 0x00},
 	{0x0b00, 0x00},
 	{0x3230, 0x00},
@@ -734,8 +772,8 @@ static const struct imx519_reg mode_1280x720_regs[] = {
 	{0x0112, 0x0a},
 	{0x0113, 0x0a},
 	{0x0114, 0x01},
-	{0x0342, 0x1b},
-	{0x0343, 0x3b},
+	{0x0342, 0x18},
+	{0x0343, 0x00},
 	{0x0340, 0x03},
 	{0x0341, 0x34},
 	{0x0344, 0x04},
@@ -752,8 +790,8 @@ static const struct imx519_reg mode_1280x720_regs[] = {
 	{0x0900, 0x01},
 	{0x0901, 0x22},
 	{0x0902, 0x0a},
-	{0x3f4c, 0x01},
-	{0x3f4d, 0x01},
+	{0x3f4c, 0x05},
+	{0x3f4d, 0x03},
 	{0x4254, 0x7f},
 	{0x0401, 0x00},
 	{0x0404, 0x00},
@@ -772,22 +810,30 @@ static const struct imx519_reg mode_1280x720_regs[] = {
 	{0x034f, 0xd0},
 	{0x0301, 0x06},
 	{0x0303, 0x04},
-	{0x0305, 0x04},
+	{0x0305, 0x06},
 	{0x0306, 0x01},
-	{0x0307, 0x57},
+	{0x0307, 0x40},
 	{0x0309, 0x0a},
 	{0x030b, 0x02},
 	{0x030d, 0x04},
 	{0x030e, 0x01},
-	{0x030f, 0x49},
+	{0x030f, 0x10},
 	{0x0310, 0x01},
-	{0x0820, 0x07},
-	{0x0821, 0xb6},
+	{0x0820, 0x0a},
+	{0x0821, 0x20},
 	{0x0822, 0x00},
 	{0x0823, 0x00},
 	{0x3e20, 0x01},
-	{0x3e37, 0x00},
+	{0x3e37, 0x01},
 	{0x3e3b, 0x00},
+	{0x38a4, 0x00},
+	{0x38a5, 0x00},
+	{0x38a6, 0x00},
+	{0x38a7, 0x00},
+	{0x38a8, 0x00},
+	{0x38a9, 0x50},
+	{0x38aa, 0x00},
+	{0x38ab, 0x3c},
 	{0x0106, 0x00},
 	{0x0b00, 0x00},
 	{0x3230, 0x00},
@@ -810,7 +856,7 @@ static const struct imx519_mode supported_modes_10bit[] = {
 	{
 		.width = 4656,
 		.height = 3496,
-		.line_length_pix = 0x4200,
+		.line_length_pix = 0x316a,
 		.crop = {
 			.left = IMX519_PIXEL_ARRAY_LEFT,
 			.top = IMX519_PIXEL_ARRAY_TOP,
@@ -819,11 +865,11 @@ static const struct imx519_mode supported_modes_10bit[] = {
 		},
 		.timeperframe_min = {
 			.numerator = 100,
-			.denominator = 1000
+			.denominator = 900
 		},
 		.timeperframe_default = {
 			.numerator = 100,
-			.denominator = 1000
+			.denominator = 900
 		},
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_4656x3496_regs),
@@ -833,7 +879,7 @@ static const struct imx519_mode supported_modes_10bit[] = {
 	{
 		.width = 3840,
 		.height = 2160,
-		.line_length_pix = 0x3870,
+		.line_length_pix = 0x28f6,
 		.crop = {
 			.left = IMX519_PIXEL_ARRAY_LEFT + 408,
 			.top = IMX519_PIXEL_ARRAY_TOP + 672,
@@ -842,11 +888,11 @@ static const struct imx519_mode supported_modes_10bit[] = {
 		},
 		.timeperframe_min = {
 			.numerator = 100,
-			.denominator = 2100
+			.denominator = 1800
 		},
 		.timeperframe_default = {
 			.numerator = 100,
-			.denominator = 2100
+			.denominator = 1800
 		},
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_3840x2160_regs),
@@ -856,7 +902,7 @@ static const struct imx519_mode supported_modes_10bit[] = {
 	{
 		.width = 2328,
 		.height = 1748,
-		.line_length_pix = 0x2412,
+		.line_length_pix = 0x1970,
 		.crop = {
 			.left = IMX519_PIXEL_ARRAY_LEFT,
 			.top = IMX519_PIXEL_ARRAY_TOP,
@@ -879,7 +925,7 @@ static const struct imx519_mode supported_modes_10bit[] = {
 	{
 		.width = 1920,
 		.height = 1080,
-		.line_length_pix = 0x25D9,
+		.line_length_pix = 0x178b,
 		.crop = {
 			.left = IMX519_PIXEL_ARRAY_LEFT + 408,
 			.top = IMX519_PIXEL_ARRAY_TOP + 674,
@@ -902,7 +948,7 @@ static const struct imx519_mode supported_modes_10bit[] = {
 	{
 		.width = 1280,
 		.height = 720,
-		.line_length_pix = 0x1B3B,
+		.line_length_pix = 0x1800,
 		.crop = {
 			.left = IMX519_PIXEL_ARRAY_LEFT + 1048,
 			.top = IMX519_PIXEL_ARRAY_TOP + 1042,
@@ -911,11 +957,11 @@ static const struct imx519_mode supported_modes_10bit[] = {
 		},
 		.timeperframe_min = {
 			.numerator = 100,
-			.denominator = 12000
+			.denominator = 8000
 		},
 		.timeperframe_default = {
 			.numerator = 100,
-			.denominator = 12000
+			.denominator = 8000
 		},
 		.reg_list = {
 			.num_of_regs = ARRAY_SIZE(mode_1280x720_regs),
@@ -1111,9 +1157,9 @@ static int imx519_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct imx519 *imx519 = to_imx519(sd);
 	struct v4l2_mbus_framefmt *try_fmt_img =
-		v4l2_subdev_get_try_format(sd, fh->pad, IMAGE_PAD);
+		v4l2_subdev_get_try_format(sd, fh->state, IMAGE_PAD);
 	struct v4l2_mbus_framefmt *try_fmt_meta =
-		v4l2_subdev_get_try_format(sd, fh->pad, METADATA_PAD);
+		v4l2_subdev_get_try_format(sd, fh->state, METADATA_PAD);
 	struct v4l2_rect *try_crop;
 
 	mutex_lock(&imx519->mutex);
@@ -1131,7 +1177,7 @@ static int imx519_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	try_fmt_meta->field = V4L2_FIELD_NONE;
 
 	/* Initialize try_crop */
-	try_crop = v4l2_subdev_get_try_crop(sd, fh->pad, IMAGE_PAD);
+	try_crop = v4l2_subdev_get_try_crop(sd, fh->state, IMAGE_PAD);
 	try_crop->left = IMX519_PIXEL_ARRAY_LEFT;
 	try_crop->top = IMX519_PIXEL_ARRAY_TOP;
 	try_crop->width = IMX519_PIXEL_ARRAY_WIDTH;
@@ -1259,7 +1305,7 @@ static const struct v4l2_ctrl_ops imx519_ctrl_ops = {
 };
 
 static int imx519_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct imx519 *imx519 = to_imx519(sd);
@@ -1283,7 +1329,7 @@ static int imx519_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int imx519_enum_frame_size(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct imx519 *imx519 = to_imx519(sd);
@@ -1344,7 +1390,7 @@ static void imx519_update_metadata_pad_format(struct v4l2_subdev_format *fmt)
 }
 
 static int imx519_get_pad_format(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_format *fmt)
 {
 	struct imx519 *imx519 = to_imx519(sd);
@@ -1356,7 +1402,8 @@ static int imx519_get_pad_format(struct v4l2_subdev *sd,
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *try_fmt =
-			v4l2_subdev_get_try_format(&imx519->sd, cfg, fmt->pad);
+			v4l2_subdev_get_try_format(&imx519->sd, sd_state,
+						   fmt->pad);
 		/* update the code which could change due to vflip or hflip: */
 		try_fmt->code = fmt->pad == IMAGE_PAD ?
 				imx519_get_format_code(imx519) :
@@ -1424,7 +1471,7 @@ static void imx519_set_framing_limits(struct imx519 *imx519)
 }
 
 static int imx519_set_pad_format(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_format *fmt)
 {
 	struct v4l2_mbus_framefmt *framefmt;
@@ -1447,7 +1494,7 @@ static int imx519_set_pad_format(struct v4l2_subdev *sd,
 					      fmt->format.height);
 		imx519_update_image_pad_format(imx519, mode, fmt);
 		if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-			framefmt = v4l2_subdev_get_try_format(sd, cfg,
+			framefmt = v4l2_subdev_get_try_format(sd, sd_state,
 							      fmt->pad);
 			*framefmt = fmt->format;
 		} else {
@@ -1457,7 +1504,7 @@ static int imx519_set_pad_format(struct v4l2_subdev *sd,
 		}
 	} else {
 		if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-			framefmt = v4l2_subdev_get_try_format(sd, cfg,
+			framefmt = v4l2_subdev_get_try_format(sd, sd_state,
 							      fmt->pad);
 			*framefmt = fmt->format;
 		} else {
@@ -1472,12 +1519,12 @@ static int imx519_set_pad_format(struct v4l2_subdev *sd,
 }
 
 static const struct v4l2_rect *
-__imx519_get_pad_crop(struct imx519 *imx519, struct v4l2_subdev_pad_config *cfg,
+__imx519_get_pad_crop(struct imx519 *imx519, struct v4l2_subdev_state *sd_state,
 		      unsigned int pad, enum v4l2_subdev_format_whence which)
 {
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		return v4l2_subdev_get_try_crop(&imx519->sd, cfg, pad);
+		return v4l2_subdev_get_try_crop(&imx519->sd, sd_state, pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
 		return &imx519->mode->crop;
 	}
@@ -1486,7 +1533,7 @@ __imx519_get_pad_crop(struct imx519 *imx519, struct v4l2_subdev_pad_config *cfg,
 }
 
 static int imx519_get_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
 	switch (sel->target) {
@@ -1494,7 +1541,7 @@ static int imx519_get_selection(struct v4l2_subdev *sd,
 		struct imx519 *imx519 = to_imx519(sd);
 
 		mutex_lock(&imx519->mutex);
-		sel->r = *__imx519_get_pad_crop(imx519, cfg, sel->pad,
+		sel->r = *__imx519_get_pad_crop(imx519, sd_state, sel->pad,
 						sel->which);
 		mutex_unlock(&imx519->mutex);
 
@@ -1776,6 +1823,7 @@ static int imx519_init_controls(struct imx519 *imx519)
 	struct v4l2_ctrl_handler *ctrl_hdlr;
 	struct i2c_client *client = v4l2_get_subdevdata(&imx519->sd);
 	struct v4l2_fwnode_device_properties props;
+	struct v4l2_ctrl *link_freq;
 	unsigned int i;
 	int ret;
 
@@ -1793,6 +1841,15 @@ static int imx519_init_controls(struct imx519 *imx519)
 					       IMX519_PIXEL_RATE,
 					       IMX519_PIXEL_RATE, 1,
 					       IMX519_PIXEL_RATE);
+
+	/* LINK_FREQ is also read only */
+	link_freq =
+		v4l2_ctrl_new_int_menu(ctrl_hdlr, &imx519_ctrl_ops,
+				       V4L2_CID_LINK_FREQ,
+				       ARRAY_SIZE(imx519_link_freq_menu) - 1, 0,
+				       imx519_link_freq_menu);
+	if (link_freq)
+		link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	/*
 	 * Create the controls here, but mode specific limits are setup
@@ -2028,7 +2085,7 @@ static int imx519_probe(struct i2c_client *client)
 		goto error_handler_free;
 	}
 
-	ret = v4l2_async_register_subdev_sensor_common(&imx519->sd);
+	ret = v4l2_async_register_subdev_sensor(&imx519->sd);
 	if (ret < 0) {
 		dev_err(dev, "failed to register sensor sub-device: %d\n", ret);
 		goto error_media_entity;
@@ -2050,7 +2107,7 @@ error_power_off:
 	return ret;
 }
 
-static int imx519_remove(struct i2c_client *client)
+static void imx519_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx519 *imx519 = to_imx519(sd);
@@ -2063,8 +2120,6 @@ static int imx519_remove(struct i2c_client *client)
 	if (!pm_runtime_status_suspended(&client->dev))
 		imx519_power_off(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
-
-	return 0;
 }
 
 MODULE_DEVICE_TABLE(of, imx519_dt_ids);

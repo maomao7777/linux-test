@@ -50,6 +50,7 @@ struct rpivid_h265_run {
 	u32 slice_ents;
 	const struct v4l2_ctrl_hevc_sps			*sps;
 	const struct v4l2_ctrl_hevc_pps			*pps;
+	const struct v4l2_ctrl_hevc_decode_params      	*dec;
 	const struct v4l2_ctrl_hevc_slice_params	*slice_params;
 	const struct v4l2_ctrl_hevc_scaling_matrix	*scaling_matrix;
 };
@@ -89,7 +90,6 @@ struct rpivid_ctx {
 	struct v4l2_pix_format_mplane	dst_fmt;
 	int dst_fmt_set;
 
-	struct clk_request		*clk_req;
 	int 				src_stream_on;
 	int 				dst_stream_on;
 
@@ -185,6 +185,7 @@ struct rpivid_dev {
 	void __iomem		*base_h265;
 
 	struct clk		*clock;
+	unsigned long		max_clock_rate;
 
 	int			cache_align;
 

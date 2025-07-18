@@ -245,13 +245,15 @@ struct rpivid_dec_state {
 
 	// Slice vars
 	unsigned int slice_idx;
-	bool frame_end;
 	bool slice_temporal_mvp;  /* Slice flag but constant for frame */
+	bool use_aux;
+	bool mk_aux;
 
 	// Temp vars per run - don't actually need to persist
 	u8 *src_buf;
 	dma_addr_t src_addr;
 	const struct v4l2_ctrl_hevc_slice_params *sh;
+	const struct v4l2_ctrl_hevc_decode_params *dec;
 	unsigned int nb_refs[2];
 	unsigned int slice_qp;
 	unsigned int max_num_merge_cand; // 0 if I-slice
@@ -624,7 +626,7 @@ static int write_bitstream(struct rpivid_dec_env *const de,
 	// Whether that is the correct behaviour or not is not clear in the
 	// spec.
 	const int rpi_use_emu = 1;
-	unsigned int offset = s->sh->data_bit_offset / 8 + 1;
+	unsigned int offset = s->sh->data_byte_offset;
 	const unsigned int len = (s->sh->bit_size + 7) / 8 - offset;
 	dma_addr_t addr;
 
@@ -739,7 +741,8 @@ static void new_slice_segment(struct rpivid_dec_env *const de,
 				V4L2_HEVC_PPS_FLAG_CONSTRAINED_INTRA_PRED))
 						<< 24));
 
-	if ((sps->flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED) != 0)
+	if (!s->start_ts &&
+	    (sps->flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED) != 0)
 		write_scaling_factors(de);
 
 	if (!s->dependent_slice_segment_flag) {
@@ -778,18 +781,12 @@ static void program_slicecmds(struct rpivid_dec_env *const de,
 // Simply checks POCs
 static int has_backward(const struct v4l2_hevc_dpb_entry *const dpb,
 			const __u8 *const idx, const unsigned int n,
-			const unsigned int cur_poc)
+			const s32 cur_poc)
 {
 	unsigned int i;
 
 	for (i = 0; i < n; ++i) {
-		// Compare mod 2^16
-		// We only get u16 pocs & 8.3.1 says
-		// "The bitstream shall not contain data that result in values
-		//  of DiffPicOrderCnt( picA, picB ) used in the decoding
-		//  process that are not in the range of −2^15 to 2^15 − 1,
-		//  inclusive."
-		if (((cur_poc - dpb[idx[i]].pic_order_cnt[0]) & 0x8000) != 0)
+		if (cur_poc < dpb[idx[i]].pic_order_cnt_val)
 			return 0;
 	}
 	return 1;
@@ -799,6 +796,7 @@ static void pre_slice_decode(struct rpivid_dec_env *const de,
 			     const struct rpivid_dec_state *const s)
 {
 	const struct v4l2_ctrl_hevc_slice_params *const sh = s->sh;
+	const struct v4l2_ctrl_hevc_decode_params *const dec = s->dec;
 	int weighted_pred_flag, idx;
 	u16 cmd_slice;
 	unsigned int collocated_from_l0_flag;
@@ -825,9 +823,9 @@ static void pre_slice_decode(struct rpivid_dec_env *const de,
 	if (sh->slice_type == HEVC_SLICE_P || sh->slice_type == HEVC_SLICE_B) {
 		// Flag to say all reference pictures are from the past
 		const int no_backward_pred_flag =
-			has_backward(sh->dpb, sh->ref_idx_l0, s->nb_refs[L0],
+			has_backward(dec->dpb, sh->ref_idx_l0, s->nb_refs[L0],
 				     sh->slice_pic_order_cnt) &&
-			has_backward(sh->dpb, sh->ref_idx_l1, s->nb_refs[L1],
+			has_backward(dec->dpb, sh->ref_idx_l1, s->nb_refs[L1],
 				     sh->slice_pic_order_cnt);
 		cmd_slice |= no_backward_pred_flag << 10;
 		msg_slice(de, cmd_slice);
@@ -855,11 +853,11 @@ static void pre_slice_decode(struct rpivid_dec_env *const de,
 
 			msg_slice(de,
 				  dpb_no |
-				  (sh->dpb[dpb_no].rps ==
-					V4L2_HEVC_DPB_ENTRY_RPS_LT_CURR ?
+				  ((dec->dpb[dpb_no].flags &
+					V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE) ?
 						 (1 << 4) : 0) |
 				  (weighted_pred_flag ? (3 << 5) : 0));
-			msg_slice(de, sh->dpb[dpb_no].pic_order_cnt[0]);
+			msg_slice(de, dec->dpb[dpb_no].pic_order_cnt_val & 0xffff);
 
 			if (weighted_pred_flag) {
 				const struct v4l2_hevc_pred_weight_table
@@ -901,11 +899,11 @@ static void pre_slice_decode(struct rpivid_dec_env *const de,
 			//          "L1[%d]=dpb[%d]\n", idx, dpb_no);
 			msg_slice(de,
 				  dpb_no |
-				  (sh->dpb[dpb_no].rps ==
-					 V4L2_HEVC_DPB_ENTRY_RPS_LT_CURR ?
+				  ((dec->dpb[dpb_no].flags &
+					 V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE) ?
 						 (1 << 4) : 0) |
 					(weighted_pred_flag ? (3 << 5) : 0));
-			msg_slice(de, sh->dpb[dpb_no].pic_order_cnt[0]);
+			msg_slice(de, dec->dpb[dpb_no].pic_order_cnt_val & 0xffff);
 			if (weighted_pred_flag) {
 				const struct v4l2_hevc_pred_weight_table
 					*const w = &sh->pred_weight_table;
@@ -1109,7 +1107,8 @@ static int wpp_end_previous_slice(struct rpivid_dec_env *const de,
  * next chunk code simpler
  */
 static int wpp_decode_slice(struct rpivid_dec_env *const de,
-			    const struct rpivid_dec_state *const s)
+			    const struct rpivid_dec_state *const s,
+			    bool last_slice)
 {
 	bool reset_qp_y = true;
 	const bool indep = !s->dependent_slice_segment_flag;
@@ -1148,7 +1147,7 @@ static int wpp_decode_slice(struct rpivid_dec_env *const de,
 			0, 0, s->start_ctb_x, s->start_ctb_y,
 			s->slice_qp, slice_reg_const(s));
 
-	if (s->frame_end) {
+	if (last_slice) {
 		rv = wpp_entry_fill(de, s, s->ctb_height - 1);
 		if (rv)
 			return rv;
@@ -1227,7 +1226,8 @@ static int end_previous_slice(struct rpivid_dec_env *const de,
 }
 
 static int decode_slice(struct rpivid_dec_env *const de,
-			const struct rpivid_dec_state *const s)
+			const struct rpivid_dec_state *const s,
+			bool last_slice)
 {
 	bool reset_qp_y;
 	unsigned int tile_x = ctb_to_tile_x(s, s->start_ctb_x);
@@ -1273,7 +1273,7 @@ static int decode_slice(struct rpivid_dec_env *const de,
 	 * now, otherwise this will be done at the start of the next slice
 	 * when it will be known where this slice finishes
 	 */
-	if (s->frame_end) {
+	if (last_slice) {
 		rv = tile_entry_fill(de, s,
 				     s->tile_width - 1,
 				     s->tile_height - 1);
@@ -1653,7 +1653,7 @@ static u32 mk_config2(const struct rpivid_dec_state *const s)
 		c |= BIT(13);
 	if (sps->flags & V4L2_HEVC_SPS_FLAG_STRONG_INTRA_SMOOTHING_ENABLED)
 		c |= BIT(14);
-	if (sps->flags & V4L2_HEVC_SPS_FLAG_SPS_TEMPORAL_MVP_ENABLED)
+	if (s->mk_aux)
 		c |= BIT(15); /* Write motion vectors to external memory */
 	c |= (pps->log2_parallel_merge_level_minus2 + 2) << 16;
 	if (s->slice_temporal_mvp)
@@ -1665,35 +1665,44 @@ static u32 mk_config2(const struct rpivid_dec_state *const s)
 	return c;
 }
 
+static inline bool is_ref_unit_type(const unsigned int nal_unit_type)
+{
+	/* From Table 7-1
+	 * True for 1, 3, 5, 7, 9, 11, 13, 15
+	 */
+	return (nal_unit_type & ~0xe) != 0;
+}
+
 static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 {
 	struct rpivid_dev *const dev = ctx->dev;
-	const struct v4l2_ctrl_hevc_slice_params *const sh =
-						run->h265.slice_params;
-//	const struct v4l2_hevc_pred_weight_table *pred_weight_table;
+	const struct v4l2_ctrl_hevc_decode_params *const dec =
+						run->h265.dec;
+	/* sh0 used where slice header contents should be constant over all
+	 * slices, or first slice of frame
+	 */
+	const struct v4l2_ctrl_hevc_slice_params *const sh0 =
+					run->h265.slice_params;
 	struct rpivid_q_aux *dpb_q_aux[V4L2_HEVC_DPB_ENTRIES_NUM_MAX];
 	struct rpivid_dec_state *const s = ctx->state;
 	struct vb2_queue *vq;
 	struct rpivid_dec_env *de = ctx->dec0;
 	unsigned int prev_rs;
 	unsigned int i;
-	int use_aux;
 	int rv;
 	bool slice_temporal_mvp;
+	bool frame_end;
 
 	xtrace_in(dev, de);
+	s->sh = NULL;  // Avoid use until in the slice loop
 
-//	pred_weight_table = &sh->pred_weight_table;
-
-	s->frame_end =
+	frame_end =
 		((run->src->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF) == 0);
 
-	slice_temporal_mvp = (sh->flags &
+	slice_temporal_mvp = (sh0->flags &
 		   V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_TEMPORAL_MVP_ENABLED);
 
 	if (de && de->state != RPIVID_DECODE_END) {
-		++s->slice_idx;
-
 		switch (de->state) {
 		case RPIVID_DECODE_SLICE_CONTINUE:
 			// Expected state
@@ -1701,7 +1710,7 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 		default:
 			v4l2_err(&dev->v4l2_dev, "%s: Unexpected state: %d\n",
 				 __func__, de->state);
-		/* FALLTHRU */
+			fallthrough;
 		case RPIVID_DECODE_ERROR_CONTINUE:
 			// Uncleared error - fail now
 			goto fail;
@@ -1822,11 +1831,21 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 		 */
 		s->slice_temporal_mvp = slice_temporal_mvp;
 
+		/*
+		 * Need Aux ents for all (ref) DPB ents if temporal MV could
+		 * be enabled for any pic
+		 */
+		s->use_aux = ((s->sps.flags &
+			       V4L2_HEVC_SPS_FLAG_SPS_TEMPORAL_MVP_ENABLED) != 0);
+		s->mk_aux = s->use_aux &&
+			    (s->sps.sps_max_sub_layers_minus1 >= sh0->nuh_temporal_id_plus1 ||
+			     is_ref_unit_type(sh0->nal_unit_type));
+
 		// Phase 2 reg pre-calc
 		de->rpi_config2 = mk_config2(s);
 		de->rpi_framesize = (s->sps.pic_height_in_luma_samples << 16) |
 				    s->sps.pic_width_in_luma_samples;
-		de->rpi_currpoc = sh->slice_pic_order_cnt;
+		de->rpi_currpoc = sh0->slice_pic_order_cnt;
 
 		if (s->sps.flags &
 		    V4L2_HEVC_SPS_FLAG_SPS_TEMPORAL_MVP_ENABLED) {
@@ -1835,17 +1854,17 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 
 		s->slice_idx = 0;
 
-		if (sh->slice_segment_addr != 0) {
+		if (sh0->slice_segment_addr != 0) {
 			v4l2_warn(&dev->v4l2_dev,
 				  "New frame but segment_addr=%d\n",
-				  sh->slice_segment_addr);
+				  sh0->slice_segment_addr);
 			goto fail;
 		}
 
 		/* Allocate a bitbuf if we need one - don't need one if single
 		 * slice as we can use the src buf directly
 		 */
-		if (!s->frame_end && !de->bit_copy_gptr->ptr) {
+		if (!frame_end && !de->bit_copy_gptr->ptr) {
 			size_t bits_alloc;
 			bits_alloc = rpivid_bit_buf_size(s->sps.pic_width_in_luma_samples,
 							 s->sps.pic_height_in_luma_samples,
@@ -1869,21 +1888,7 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 	s->src_addr = 0;
 	s->src_buf = NULL;
 
-	if (run->src->planes[0].bytesused < (sh->bit_size + 7) / 8) {
-		v4l2_warn(&dev->v4l2_dev,
-			  "Bit size %d > bytesused %d\n",
-			  sh->bit_size, run->src->planes[0].bytesused);
-		goto fail;
-	}
-	if (sh->data_bit_offset >= sh->bit_size ||
-	    sh->bit_size - sh->data_bit_offset < 8) {
-		v4l2_warn(&dev->v4l2_dev,
-			  "Bit size %d < Bit offset %d + 8\n",
-			  sh->bit_size, sh->data_bit_offset);
-		goto fail;
-	}
-
-	if (s->frame_end)
+	if (frame_end)
 		s->src_addr = vb2_dma_contig_plane_dma_addr(&run->src->vb2_buf,
 							    0);
 	if (!s->src_addr)
@@ -1894,43 +1899,64 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 	}
 
 	// Pre calc a few things
-	s->sh = sh;
-	s->slice_qp = 26 + s->pps.init_qp_minus26 + s->sh->slice_qp_delta;
-	s->max_num_merge_cand = sh->slice_type == HEVC_SLICE_I ?
+	s->dec = dec;
+	for (i = 0; i != run->h265.slice_ents; ++i) {
+		const struct v4l2_ctrl_hevc_slice_params *const sh = sh0 + i;
+		const bool last_slice = frame_end && i + 1 == run->h265.slice_ents;
+
+		s->sh = sh;
+
+		if (run->src->planes[0].bytesused < (sh->bit_size + 7) / 8) {
+			v4l2_warn(&dev->v4l2_dev,
+				  "Bit size %d > bytesused %d\n",
+				  sh->bit_size, run->src->planes[0].bytesused);
+			goto fail;
+		}
+		if (sh->data_byte_offset >= sh->bit_size / 8) {
+			v4l2_warn(&dev->v4l2_dev,
+				  "Bit size %u < Byte offset %u * 8\n",
+				  sh->bit_size, sh->data_byte_offset);
+			goto fail;
+		}
+
+		s->slice_qp = 26 + s->pps.init_qp_minus26 + sh->slice_qp_delta;
+		s->max_num_merge_cand = sh->slice_type == HEVC_SLICE_I ?
+						0 :
+						(5 - sh->five_minus_max_num_merge_cand);
+		s->dependent_slice_segment_flag =
+			((sh->flags &
+			  V4L2_HEVC_SLICE_PARAMS_FLAG_DEPENDENT_SLICE_SEGMENT) != 0);
+
+		s->nb_refs[0] = (sh->slice_type == HEVC_SLICE_I) ?
 					0 :
-					(5 - sh->five_minus_max_num_merge_cand);
-	// * SH DSS flag invented by me - but clearly needed
-	s->dependent_slice_segment_flag =
-		((sh->flags &
-		  V4L2_HEVC_SLICE_PARAMS_FLAG_DEPENDENT_SLICE_SEGMENT) != 0);
+					sh->num_ref_idx_l0_active_minus1 + 1;
+		s->nb_refs[1] = (sh->slice_type != HEVC_SLICE_B) ?
+					0 :
+					sh->num_ref_idx_l1_active_minus1 + 1;
 
-	s->nb_refs[0] = (sh->slice_type == HEVC_SLICE_I) ?
-				0 :
-				sh->num_ref_idx_l0_active_minus1 + 1;
-	s->nb_refs[1] = (sh->slice_type != HEVC_SLICE_B) ?
-				0 :
-				sh->num_ref_idx_l1_active_minus1 + 1;
+		if (s->sps.flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED)
+			populate_scaling_factors(run, de, s);
 
-	if (s->sps.flags & V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED)
-		populate_scaling_factors(run, de, s);
+		/* Calc all the random coord info to avoid repeated conversion in/out */
+		s->start_ts = s->ctb_addr_rs_to_ts[sh->slice_segment_addr];
+		s->start_ctb_x = sh->slice_segment_addr % de->pic_width_in_ctbs_y;
+		s->start_ctb_y = sh->slice_segment_addr / de->pic_width_in_ctbs_y;
+		/* Last CTB of previous slice */
+		prev_rs = !s->start_ts ? 0 : s->ctb_addr_ts_to_rs[s->start_ts - 1];
+		s->prev_ctb_x = prev_rs % de->pic_width_in_ctbs_y;
+		s->prev_ctb_y = prev_rs / de->pic_width_in_ctbs_y;
 
-	// Calc all the random coord info to avoid repeated conversion in/out
-	s->start_ts = s->ctb_addr_rs_to_ts[sh->slice_segment_addr];
-	s->start_ctb_x = sh->slice_segment_addr % de->pic_width_in_ctbs_y;
-	s->start_ctb_y = sh->slice_segment_addr / de->pic_width_in_ctbs_y;
-	// Last CTB of previous slice
-	prev_rs = !s->start_ts ? 0 : s->ctb_addr_ts_to_rs[s->start_ts - 1];
-	s->prev_ctb_x = prev_rs % de->pic_width_in_ctbs_y;
-	s->prev_ctb_y = prev_rs / de->pic_width_in_ctbs_y;
+		if ((s->pps.flags & V4L2_HEVC_PPS_FLAG_ENTROPY_CODING_SYNC_ENABLED))
+			rv = wpp_decode_slice(de, s, last_slice);
+		else
+			rv = decode_slice(de, s, last_slice);
+		if (rv)
+			goto fail;
 
-	if ((s->pps.flags & V4L2_HEVC_PPS_FLAG_ENTROPY_CODING_SYNC_ENABLED))
-		rv = wpp_decode_slice(de, s);
-	else
-		rv = decode_slice(de, s);
-	if (rv)
-		goto fail;
+		++s->slice_idx;
+	}
 
-	if (!s->frame_end) {
+	if (!frame_end) {
 		xtrace_ok(dev, de);
 		return;
 	}
@@ -1938,15 +1964,6 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 	// Frame end
 	memset(dpb_q_aux, 0,
 	       sizeof(*dpb_q_aux) * V4L2_HEVC_DPB_ENTRIES_NUM_MAX);
-	/*
-	 * Need Aux ents for all (ref) DPB ents if temporal MV could
-	 * be enabled for any pic
-	 * ** At the moment we create aux ents for all pics whether or not
-	 *    they are ref - they should then be discarded by the DPB-aux
-	 *    garbage collection code
-	 */
-	use_aux = ((s->sps.flags &
-		  V4L2_HEVC_SPS_FLAG_SPS_TEMPORAL_MVP_ENABLED) != 0);
 
 	// Locate ref frames
 	// At least in the current implementation this is constant across all
@@ -1965,27 +1982,22 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 	if (write_cmd_buffer(dev, de, s))
 		goto fail;
 
-	for (i = 0; i < sh->num_active_dpb_entries; ++i) {
-		int buffer_index =
-			vb2_find_timestamp(vq, sh->dpb[i].timestamp, 0);
-		struct vb2_buffer *buf = buffer_index < 0 ?
-					NULL :
-					vb2_get_buffer(vq, buffer_index);
-
+	for (i = 0; i < dec->num_active_dpb_entries; ++i) {
+		struct vb2_buffer *buf = vb2_find_buffer(vq, dec->dpb[i].timestamp);
 		if (!buf) {
 			v4l2_warn(&dev->v4l2_dev,
-				  "Missing DPB ent %d, timestamp=%lld, index=%d\n",
-				  i, (long long)sh->dpb[i].timestamp,
-				  buffer_index);
+				  "Missing DPB ent %d, timestamp=%lld\n",
+				  i, (long long)dec->dpb[i].timestamp);
 			continue;
 		}
 
-		if (use_aux) {
+		if (s->use_aux) {
+			int buffer_index = buf->index;
 			dpb_q_aux[i] = aux_q_ref_idx(ctx, buffer_index);
 			if (!dpb_q_aux[i])
 				v4l2_warn(&dev->v4l2_dev,
 					  "Missing DPB AUX ent %d, timestamp=%lld, index=%d\n",
-					  i, (long long)sh->dpb[i].timestamp,
+					  i, (long long)dec->dpb[i].timestamp,
 					  buffer_index);
 		}
 
@@ -2002,9 +2014,7 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 	// now
 	aux_q_release(ctx, &s->frame_aux);
 
-	if (use_aux) {
-		// New frame so new aux ent
-		// ??? Do we need this if non-ref ??? can we tell
+	if (s->mk_aux) {
 		s->frame_aux = aux_q_new(ctx, run->dst->vb2_buf.index);
 
 		if (!s->frame_aux) {
@@ -2017,11 +2027,11 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 	}
 
 	if (de->dpbno_col != ~0U) {
-		if (de->dpbno_col >= sh->num_active_dpb_entries) {
+		if (de->dpbno_col >= dec->num_active_dpb_entries) {
 			v4l2_err(&dev->v4l2_dev,
 				 "Col ref index %d >= %d\n",
 				 de->dpbno_col,
-				 sh->num_active_dpb_entries);
+				 dec->num_active_dpb_entries);
 		} else {
 			// Standard requires that the col pic is
 			// constant for the duration of the pic
@@ -2049,8 +2059,8 @@ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
 fail:
 	if (de)
 		// Actual error reporting happens in Trigger
-		de->state = s->frame_end ? RPIVID_DECODE_ERROR_DONE :
-					   RPIVID_DECODE_ERROR_CONTINUE;
+		de->state = frame_end ? RPIVID_DECODE_ERROR_DONE :
+					RPIVID_DECODE_ERROR_CONTINUE;
 	xtrace_fail(dev, de);
 }
 
@@ -2485,11 +2495,19 @@ static int rpivid_h265_start(struct rpivid_ctx *ctx)
 	for (i = 0; i != ARRAY_SIZE(ctx->pu_bufs); ++i) {
 		// Don't actually need a kernel mapping here
 		if (gptr_alloc(dev, ctx->pu_bufs + i, pu_alloc,
-			       DMA_ATTR_NO_KERNEL_MAPPING))
+			       DMA_ATTR_NO_KERNEL_MAPPING)) {
+			v4l2_err(&dev->v4l2_dev,
+				 "Failed to alloc %#zx PU%d buffer\n",
+				 pu_alloc, i);
 			goto fail;
+		}
 		if (gptr_alloc(dev, ctx->coeff_bufs + i, coeff_alloc,
-			       DMA_ATTR_NO_KERNEL_MAPPING))
+			       DMA_ATTR_NO_KERNEL_MAPPING)) {
+			v4l2_err(&dev->v4l2_dev,
+				 "Failed to alloc %#zx Coeff%d buffer\n",
+				 pu_alloc, i);
 			goto fail;
+		}
 	}
 	aux_q_init(ctx);
 
@@ -2510,7 +2528,7 @@ static void rpivid_h265_trigger(struct rpivid_ctx *ctx)
 	switch (!de ? RPIVID_DECODE_ERROR_CONTINUE : de->state) {
 	case RPIVID_DECODE_SLICE_START:
 		de->state = RPIVID_DECODE_SLICE_CONTINUE;
-	/* FALLTHRU */
+		fallthrough;
 	case RPIVID_DECODE_SLICE_CONTINUE:
 		v4l2_m2m_buf_done_and_job_finish(dev->m2m_dev, ctx->fh.m2m_ctx,
 						 VB2_BUF_STATE_DONE);
@@ -2520,11 +2538,11 @@ static void rpivid_h265_trigger(struct rpivid_ctx *ctx)
 	default:
 		v4l2_err(&dev->v4l2_dev, "%s: Unexpected state: %d\n", __func__,
 			 de->state);
-	/* FALLTHRU */
+		fallthrough;
 	case RPIVID_DECODE_ERROR_DONE:
 		ctx->dec0 = NULL;
 		dec_env_delete(de);
-	/* FALLTHRU */
+		fallthrough;
 	case RPIVID_DECODE_ERROR_CONTINUE:
 		xtrace_fin(dev, de);
 		v4l2_m2m_buf_done_and_job_finish(dev->m2m_dev, ctx->fh.m2m_ctx,

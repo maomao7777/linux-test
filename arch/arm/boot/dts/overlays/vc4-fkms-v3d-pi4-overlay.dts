@@ -8,7 +8,7 @@
 #include "cma-overlay.dts"
 
 &frag0 {
-	size = <((320-4)*1024*1024)>;
+	size = <((512-4)*1024*1024)>;
 };
 
 / {
@@ -39,6 +39,12 @@
 		target = <&vc4>;
 		__overlay__  {
 			status = "okay";
+		};
+	};
+	fragment@5 {
+		target-path = "/chosen";
+		__overlay__  {
+			bootargs = "clk_ignore_unused";
 		};
 	};
 };

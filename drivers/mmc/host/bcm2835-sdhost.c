@@ -242,15 +242,19 @@ static void __iomem *timer_base;
 #define LOG_ENTRIES (256*1)
 #define LOG_SIZE (sizeof(LOG_ENTRY_T)*LOG_ENTRIES)
 
-static void log_init(struct device *dev, u32 bus_to_phys)
+static void log_init(struct device *dev)
 {
+	struct device_node *np;
+
 	spin_lock_init(&log_lock);
 	sdhost_log_buf = dma_alloc_coherent(dev, LOG_SIZE, &sdhost_log_addr,
 					     GFP_KERNEL);
 	if (sdhost_log_buf) {
+		np = of_find_compatible_node(NULL, NULL,
+					     "brcm,bcm2835-system-timer");
 		pr_info("sdhost: log_buf @ %p (%llx)\n",
 			sdhost_log_buf, (u64)sdhost_log_addr);
-		timer_base = ioremap(bus_to_phys + 0x7e003000, SZ_4K);
+		timer_base = of_iomap(np, 0);
 		if (!timer_base)
 			pr_err("sdhost: failed to remap timer\n");
 	}
@@ -445,6 +449,7 @@ static void bcm2835_sdhost_reset_internal(struct bcm2835_host *host)
 	bcm2835_sdhost_write(host, SDCDIV_MAX_CDIV, SDCDIV);
 }
 
+#if 0 // todo fix
 static void bcm2835_sdhost_reset(struct mmc_host *mmc)
 {
 	struct bcm2835_host *host = mmc_priv(mmc);
@@ -456,6 +461,7 @@ static void bcm2835_sdhost_reset(struct mmc_host *mmc)
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
+#endif
 
 static void bcm2835_sdhost_set_ios(struct mmc_host *mmc, struct mmc_ios *ios);
 
@@ -1776,7 +1782,7 @@ static void bcm2835_sdhost_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 static struct mmc_host_ops bcm2835_sdhost_ops = {
 	.request = bcm2835_sdhost_request,
 	.set_ios = bcm2835_sdhost_set_ios,
-	.hw_reset = bcm2835_sdhost_reset,
+// todo:fix	.hw_reset = bcm2835_sdhost_reset,
 };
 
 static void bcm2835_sdhost_cmd_wait_work(struct work_struct *work)
@@ -1921,7 +1927,6 @@ int bcm2835_sdhost_add_host(struct bcm2835_host *host)
 		} else {
 			cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 			cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
-			cfg.slave_id = 13;		/* DREQ channel */
 
 			/* Validate the slave configurations */
 
@@ -2010,9 +2015,7 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 	struct resource *iomem;
 	struct bcm2835_host *host;
 	struct mmc_host *mmc;
-	const __be32 *addr;
 	u32 msg[3];
-	int na;
 	int ret;
 
 	pr_debug("bcm2835_sdhost_probe\n");
@@ -2029,24 +2032,13 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 	host->allow_dma = 1;
 	spin_lock_init(&host->lock);
 
-	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	host->ioaddr = devm_ioremap_resource(dev, iomem);
+	host->ioaddr = devm_platform_get_and_ioremap_resource(pdev, 0, &iomem);
 	if (IS_ERR(host->ioaddr)) {
 		ret = PTR_ERR(host->ioaddr);
 		goto err;
 	}
 
-	na = of_n_addr_cells(node);
-	addr = of_get_address(node, 0, NULL, NULL);
-	if (!addr) {
-		dev_err(dev, "could not get DMA-register address\n");
-		return -ENODEV;
-	}
-	host->bus_addr = (phys_addr_t)of_read_number(addr, na);
-	pr_debug(" - ioaddr %lx, iomem->start %lx, bus_addr %lx\n",
-		 (unsigned long)host->ioaddr,
-		 (unsigned long)iomem->start,
-		 (unsigned long)host->bus_addr);
+	host->bus_addr = iomem->start;
 
 	if (node) {
 		/* Read any custom properties */
@@ -2122,7 +2114,7 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 		 (unsigned long)host->max_clk,
 		 (int)host->irq);
 
-	log_init(dev, iomem->start - host->bus_addr);
+	log_init(dev);
 
 	if (node)
 		mmc_of_parse(mmc);

@@ -287,7 +287,7 @@ static struct v4l2_pix_format_mplane
 rpivid_hevc_default_dst_fmt(struct rpivid_ctx * const ctx)
 {
 	const struct v4l2_ctrl_hevc_sps * const sps =
-		rpivid_find_control_data(ctx, V4L2_CID_MPEG_VIDEO_HEVC_SPS);
+		rpivid_find_control_data(ctx, V4L2_CID_STATELESS_HEVC_SPS);
 	struct v4l2_pix_format_mplane pix_fmt;
 
 	memset(&pix_fmt, 0, sizeof(pix_fmt));
@@ -305,7 +305,7 @@ static u32 rpivid_hevc_get_dst_pixelformat(struct rpivid_ctx * const ctx,
 					   const int index)
 {
 	const struct v4l2_ctrl_hevc_sps * const sps =
-		rpivid_find_control_data(ctx, V4L2_CID_MPEG_VIDEO_HEVC_SPS);
+		rpivid_find_control_data(ctx, V4L2_CID_STATELESS_HEVC_SPS);
 
 	return pixelformat_from_sps(sps, index);
 }
@@ -367,7 +367,7 @@ static int rpivid_try_fmt_vid_cap(struct file *file, void *priv,
 {
 	struct rpivid_ctx *ctx = rpivid_file2ctx(file);
 	const struct v4l2_ctrl_hevc_sps * const sps =
-		rpivid_find_control_data(ctx, V4L2_CID_MPEG_VIDEO_HEVC_SPS);
+		rpivid_find_control_data(ctx, V4L2_CID_STATELESS_HEVC_SPS);
 	u32 pixelformat;
 	int i;
 
@@ -545,38 +545,27 @@ static int rpivid_buf_prepare(struct vb2_buffer *vb)
 static void stop_clock(struct rpivid_dev *dev, struct rpivid_ctx *ctx)
 {
 	if (ctx->src_stream_on ||
-	    ctx->dst_stream_on ||
-	    !ctx->clk_req)
+	    ctx->dst_stream_on)
 		return;
 
-	clk_request_done(ctx->clk_req);
-	ctx->clk_req = NULL;
-
+	clk_set_min_rate(dev->clock, 0);
 	clk_disable_unprepare(dev->clock);
 }
 
 /* Always starts the clock if it isn't already on this ctx */
 static int start_clock(struct rpivid_dev *dev, struct rpivid_ctx *ctx)
 {
-	long max_hevc_clock;
 	int rv;
 
-	if (ctx->clk_req)
-		return 0;
-
-	max_hevc_clock = clk_round_rate(dev->clock, ULONG_MAX);
-
-	ctx->clk_req = clk_request_start(dev->clock, max_hevc_clock);
-	if (!ctx->clk_req) {
+	rv = clk_set_min_rate(dev->clock, dev->max_clock_rate);
+	if (rv) {
 		dev_err(dev->dev, "Failed to set clock rate\n");
-		return -EIO;
+		return rv;
 	}
 
 	rv = clk_prepare_enable(dev->clock);
 	if (rv) {
 		dev_err(dev->dev, "Failed to enable clock\n");
-		clk_request_done(ctx->clk_req);
-		ctx->clk_req = NULL;
 		return rv;
 	}
 

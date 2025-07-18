@@ -3,10 +3,16 @@
 
 &leds {
 	act_led: led-act {
-		label = "led0";
+		default-state = "off";
 		linux,default-trigger = "mmc0";
 		gpios = <&gpio 47 0>;
 	};
+};
+
+i2c_arm: &i2c1 {
+};
+
+i2c_vc: &i2c0 {
 };
 
 / {
@@ -15,8 +21,8 @@
 		act_led_activelow = <&act_led>,"gpios:8";
 		act_led_trigger = <&act_led>,"linux,default-trigger";
 		cam0_reg = <&cam0_reg>,"status";
-		cam0_reg_gpio = <&cam0_reg>,"gpios:4";
+		cam0_reg_gpio = <&cam0_reg>,"gpio:4";
 		cam1_reg = <&cam1_reg>,"status";
-		cam1_reg_gpio = <&cam1_reg>,"gpios:4";
+		cam1_reg_gpio = <&cam1_reg>,"gpio:4";
 	};
 };

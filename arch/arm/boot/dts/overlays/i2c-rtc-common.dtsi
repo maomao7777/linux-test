@@ -250,7 +250,7 @@
 			#size-cells = <0>;
 
 			s35390a: s35390a@30 {
-				compatible = "ablic,s35390a";
+				compatible = "sii,s35390a";
 				reg = <0x30>;
 			};
 		};
@@ -266,6 +266,32 @@
 				compatible = "ti,bq32000";
 				trickle-resistor-ohms = <0>;
 				reg = <0x68>;
+			};
+		};
+	};
+
+	fragment@20 {
+		target = <&i2cbus>;
+		__dormant__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			rv8803: rv8803@32 {
+				compatible = "microcrystal,rv8803";
+				reg = <0x32>;
+			};
+		};
+	};
+
+	fragment@21 {
+		target = <&i2cbus>;
+		__dormant__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			rv3032: rv3032@51 {
+				compatible = "microcrystal,rv3032";
+				reg = <0x51>;
 			};
 		};
 	};
@@ -292,6 +318,8 @@
 		pcf85063a = <0>,"+16";
 		s35390a = <0>,"+18";
 		bq32000 = <0>,"+19";
+		rv8803 = <0>,"+20";
+		rv3032 = <0>,"+21";
 
 		addr = <&abx80x>, "reg:0",
 		       <&ds1307>, "reg:0",
@@ -311,8 +339,10 @@
 					<&ds1340>,"trickle-resistor-ohms:0",
 					<&abx80x>,"abracon,tc-resistor:0",
 					<&rv3028>,"trickle-resistor-ohms:0",
+					<&rv3032>,"trickle-resistor-ohms:0",
 					<&rv1805>,"abracon,tc-resistor:0",
 					<&bq32000>,"abracon,tc-resistor:0";
+		trickle-voltage-mv = <&rv3032>,"trickle-voltage-millivolts:0";
 		backup-switchover-mode = <&rv3028>,"backup-switchover-mode:0";
 		wakeup-source = <&ds1339>,"wakeup-source?",
 				<&ds3231>,"wakeup-source?",

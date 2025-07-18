@@ -13,30 +13,13 @@
 			#size-cells = <0>;
 			status = "okay";
 
-			ov5647: ov5647@36 {
-				compatible = "ovti,ov5647";
-				reg = <0x36>;
-				status = "okay";
+			#include "ov5647.dtsi"
 
-				clocks = <&cam1_clk>;
-
-				avdd-supply = <&cam1_reg>;
-				dovdd-supply = <&cam_dummy_reg>;
-				dvdd-supply = <&cam_dummy_reg>;
-
-				rotation = <0>;
-				orientation = <2>;
-
-				port {
-					ov5647_0: endpoint {
-						remote-endpoint = <&csi1_ep>;
-						clock-lanes = <0>;
-						data-lanes = <1 2>;
-						clock-noncontinuous;
-						link-frequencies =
-							/bits/ 64 <297000000>;
-					};
-				};
+			vcm_node: ad5398@c {
+				compatible = "adi,ad5398";
+				reg = <0x0c>;
+				status = "disabled";
+				VANA-supply = <&cam1_reg>;
 			};
 		};
 	};
@@ -48,8 +31,8 @@
 			brcm,media-controller;
 
 			port {
-				csi1_ep: endpoint {
-					remote-endpoint = <&ov5647_0>;
+				csi_ep: endpoint {
+					remote-endpoint = <&cam_endpoint>;
 					data-lanes = <1 2>;
 				};
 			};
@@ -86,14 +69,25 @@
 	};
 
 	__overrides__ {
-		rotation = <&ov5647>,"rotation:0";
-		orientation = <&ov5647>,"orientation:0";
+		rotation = <&cam_node>,"rotation:0";
+		orientation = <&cam_node>,"orientation:0";
 		media-controller = <&csi>,"brcm,media-controller?";
-		cam0 = <&i2c_frag>, "target:0=",<&i2c_vc>,
+		cam0 = <&i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
 		       <&csi_frag>, "target:0=",<&csi0>,
 		       <&reg_frag>, "target:0=",<&cam0_reg>,
 		       <&clk_frag>, "target:0=",<&cam0_clk>,
-		       <&ov5647>, "clocks:0=",<&cam0_clk>,
-		       <&ov5647>, "avdd-supply:0=",<&cam0_reg>;
+		       <&cam_node>, "clocks:0=",<&cam0_clk>,
+		       <&cam_node>, "avdd-supply:0=",<&cam0_reg>,
+		       <&vcm_node>, "VANA-supply:0=",<&cam0_reg>;
+		vcm = <&vcm_node>, "status=okay",
+		       <&cam_node>,"lens-focus:0=", <&vcm_node>;
 	};
+};
+
+&cam_node {
+	status = "okay";
+};
+
+&cam_endpoint {
+	remote-endpoint = <&csi_ep>;
 };

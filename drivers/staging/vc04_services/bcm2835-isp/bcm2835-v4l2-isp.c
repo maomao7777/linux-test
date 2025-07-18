@@ -32,6 +32,8 @@
  */
 #define BCM2835_ISP_NUM_INSTANCES 2
 
+MODULE_IMPORT_NS(DMA_BUF);
+
 static unsigned int debug;
 module_param(debug, uint, 0644);
 MODULE_PARM_DESC(debug, "activates debug info");
@@ -198,9 +200,9 @@ static int set_wb_gains(struct bcm2835_isp_node *node)
 
 static int set_digital_gain(struct bcm2835_isp_node *node, uint32_t gain)
 {
-	struct mmal_parameter_rational digital_gain = {
-		.num = gain,
-		.den = 1000
+	struct s32_fract digital_gain = {
+		.numerator = gain,
+		.denominator = 1000
 	};
 
 	return set_isp_param(node, MMAL_PARAMETER_DIGITAL_GAIN,
@@ -622,7 +624,6 @@ static void bcm2835_isp_node_stop_streaming(struct vb2_queue *q)
 {
 	struct bcm2835_isp_node *node = vb2_get_drv_priv(q);
 	struct bcm2835_isp_dev *dev = node_get_dev(node);
-	unsigned int i;
 	int ret;
 
 	v4l2_dbg(1, debug, &dev->v4l2_dev, "%s: node %s[%d], mmal port %p\n",
@@ -653,17 +654,22 @@ static void bcm2835_isp_node_stop_streaming(struct vb2_queue *q)
 		}
 	}
 
-	/* Release the VCSM handle here to release the associated dmabuf */
-	for (i = 0; i < q->num_buffers; i++) {
-		struct vb2_v4l2_buffer *vb2 = to_vb2_v4l2_buffer(q->bufs[i]);
-		struct bcm2835_isp_buffer *buf =
-			container_of(vb2, struct bcm2835_isp_buffer, vb);
-		bcm2835_isp_mmal_buf_cleanup(&buf->mmal);
-	}
-
 	atomic_dec(&dev->num_streaming);
 	/* If all ports disabled, then disable the component */
 	if (atomic_read(&dev->num_streaming) == 0) {
+		struct bcm2835_isp_lens_shading ls;
+		/*
+		 * The ISP component on the firmware has a reference to the
+		 * dmabuf handle for the lens shading table.  Pass a null handle
+		 * to remove that reference now.
+		 */
+		memset(&ls, 0, sizeof(ls));
+		/* Must set a valid grid size for the FW */
+		ls.grid_cell_size = 16;
+		set_isp_param(&dev->node[0],
+			      MMAL_PARAMETER_LENS_SHADING_OVERRIDE,
+			      &ls, sizeof(ls));
+
 		ret = vchiq_mmal_component_disable(dev->mmal_instance,
 						   dev->component);
 		if (ret) {
@@ -1473,7 +1479,7 @@ queue_cleanup:
 }
 
 /* Unregister one of the /dev/video<N> nodes associated with the ISP. */
-static void unregister_node(struct bcm2835_isp_node *node)
+static void bcm2835_unregister_node(struct bcm2835_isp_node *node)
 {
 	struct bcm2835_isp_dev *dev = node_get_dev(node);
 
@@ -1675,7 +1681,7 @@ static void bcm2835_isp_remove_instance(struct bcm2835_isp_dev *dev)
 	media_controller_unregister(dev);
 
 	for (i = 0; i < BCM2835_ISP_NUM_NODES; i++)
-		unregister_node(&dev->node[i]);
+		bcm2835_unregister_node(&dev->node[i]);
 
 	v4l2_device_unregister(&dev->v4l2_dev);
 

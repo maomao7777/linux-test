@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
+#define BCM2711
+#define i2c0 i2c0if
 #include "bcm2711.dtsi"
-#include "bcm2835-rpi.dtsi"
-
-#include <dt-bindings/reset/raspberrypi,firmware-reset.h>
+#include "bcm283x-rpi-wifi-bt.dtsi"
+#undef i2c0
+#include "bcm270x.dtsi"
+#define i2c0 i2c0mux
+#include "bcm2711-rpi.dtsi"
+#undef i2c0
+//#include "bcm283x-rpi-usb-peripheral.dtsi"
 
 / {
 	compatible = "raspberrypi,400", "brcm,bcm2711";
@@ -12,19 +18,6 @@
 	chosen {
 		/* 8250 auxiliary UART instead of pl011 */
 		stdout-path = "serial1:115200n8";
-	};
-
-	/* Will be filled by the bootloader */
-	memory@0 {
-		device_type = "memory";
-		reg = <0 0 0>;
-	};
-
-	aliases {
-		emmc2bus = &emmc2bus;
-		ethernet0 = &genet;
-		pcie0 = &pcie0;
-		blconfig = &blconfig;
 	};
 
 	leds {
@@ -40,11 +33,6 @@
 		};
 	};
 
-	wifi_pwrseq: wifi-pwrseq {
-		compatible = "mmc-pwrseq-simple";
-		reset-gpios = <&expgpio 1 GPIO_ACTIVE_LOW>;
-	};
-
 	sd_io_1v8_reg: sd_io_1v8_reg {
 		compatible = "regulator-gpio";
 		regulator-name = "vdd-sd-io";
@@ -54,8 +42,8 @@
 		regulator-always-on;
 		regulator-settling-time-us = <5000>;
 		gpios = <&expgpio 4 GPIO_ACTIVE_HIGH>;
-		states = <1800000 0x1
-			  3300000 0x0>;
+		states = <1800000 0x1>,
+			 <3300000 0x0>;
 		status = "okay";
 	};
 
@@ -70,6 +58,10 @@
 	};
 };
 
+&bt {
+	shutdown-gpios = <&expgpio 0 GPIO_ACTIVE_HIGH>;
+};
+
 &ddc0 {
 	status = "okay";
 };
@@ -78,31 +70,15 @@
 	status = "okay";
 };
 
-&firmware {
-	firmware_clocks: clocks {
-		compatible = "raspberrypi,firmware-clocks";
-		#clock-cells = <1>;
-	};
-
-	expgpio: gpio {
-		compatible = "raspberrypi,firmware-gpio";
-		gpio-controller;
-		#gpio-cells = <2>;
-		gpio-line-names = "BT_ON",
-				  "WL_ON",
-				  "PWR_LED_OFF",
-				  "GLOBAL_RESET",
-				  "VDD_SD_IO_SEL",
-				  "GLOBAL_SHUTDOWN",
-				  "SD_PWR_ON",
-				  "SHUTDOWN_REQUEST";
-		status = "okay";
-	};
-
-	reset: reset {
-		compatible = "raspberrypi,firmware-reset";
-		#reset-cells = <1>;
-	};
+&expgpio {
+	gpio-line-names = "BT_ON",
+			  "WL_ON",
+			  "PWR_LED_OFF",
+			  "GLOBAL_RESET",
+			  "VDD_SD_IO_SEL",
+			  "GLOBAL_SHUTDOWN",
+			  "SD_PWR_ON",
+			  "SHUTDOWN_REQUEST";
 };
 
 &gpio {
@@ -179,21 +155,11 @@
 };
 
 &hdmi0 {
-	clocks = <&firmware_clocks 13>, <&firmware_clocks 14>, <&dvp 0>, <&clk_27MHz>;
-	clock-names = "hdmi", "bvb", "audio", "cec";
-	wifi-2.4ghz-coexistence;
 	status = "okay";
 };
 
 &hdmi1 {
-	clocks = <&firmware_clocks 13>, <&firmware_clocks 14>, <&dvp 1>, <&clk_27MHz>;
-	clock-names = "hdmi", "bvb", "audio", "cec";
-	wifi-2.4ghz-coexistence;
 	status = "okay";
-};
-
-&hvs {
-	clocks = <&firmware_clocks 4>;
 };
 
 &pixelvalve0 {
@@ -216,39 +182,6 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pwm1_0_gpio40 &pwm1_1_gpio41>;
 	status = "okay";
-};
-
-&rmem {
-	/*
-	 * RPi4's co-processor will copy the board's bootloader configuration
-	 * into memory for the OS to consume. It'll also update this node with
-	 * its placement information.
-	 */
-	blconfig: nvram@0 {
-		compatible = "raspberrypi,bootloader-config", "nvmem-rmem";
-		#address-cells = <1>;
-		#size-cells = <1>;
-		reg = <0x0 0x0 0x0>;
-		no-map;
-		status = "disabled";
-	};
-};
-
-/* SDHCI is used to control the SDIO for wireless */
-&sdhci {
-	#address-cells = <1>;
-	#size-cells = <0>;
-	pinctrl-names = "default";
-	pinctrl-0 = <&emmc_gpio34>;
-	bus-width = <4>;
-	non-removable;
-	mmc-pwrseq = <&wifi_pwrseq>;
-	status = "okay";
-
-	brcmf: wifi@1 {
-		reg = <1>;
-		compatible = "brcm,bcm4329-fmac";
-	};
 };
 
 /* EMMC2 is used to drive the SD card */
@@ -293,13 +226,6 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart0_ctsrts_gpio30 &uart0_gpio32>;
 	uart-has-rtscts;
-	status = "okay";
-
-	bluetooth {
-		compatible = "brcm,bcm43438-bt";
-		max-speed = <2000000>;
-		shutdown-gpios = <&expgpio 0 GPIO_ACTIVE_HIGH>;
-	};
 };
 
 /* uart1 is mapped to the pin header */
@@ -307,10 +233,6 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart1_gpio14>;
 	status = "okay";
-};
-
-&vchiq {
-	interrupts = <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
 };
 
 &vc4 {
@@ -321,12 +243,13 @@
 	status = "disabled";
 };
 
+&wifi_pwrseq {
+	reset-gpios = <&expgpio 1 GPIO_ACTIVE_LOW>;
+};
+
 // =============================================
 // Downstream rpi- changes
 
-#define BCM2711
-
-#include "bcm270x.dtsi"
 #include "bcm271x-rpi-bt.dtsi"
 
 / {
@@ -336,32 +259,13 @@
 	};
 };
 
-#include "bcm2711-rpi.dtsi"
+#include "bcm2711-rpi-ds.dtsi"
 #include "bcm283x-rpi-csi1-2lane.dtsi"
 #include "bcm283x-rpi-i2c0mux_0_44.dtsi"
 
 / {
 	chosen {
-		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_compat_alsa=0 snd_bcm2835.enable_hdmi=1";
-	};
-
-	aliases {
-		serial0 = &uart1;
-		serial1 = &uart0;
-		mmc0 = &emmc2;
-		mmc1 = &mmcnr;
-		mmc2 = &sdhost;
-		i2c3 = &i2c3;
-		i2c4 = &i2c4;
-		i2c5 = &i2c5;
-		i2c6 = &i2c6;
-		i2c20 = &ddc0;
-		i2c21 = &ddc1;
-		spi3 = &spi3;
-		spi4 = &spi4;
-		spi5 = &spi5;
-		spi6 = &spi6;
-		/delete-property/ intc;
+		bootargs = "coherent_pool=1M 8250.nr_uarts=1 snd_bcm2835.enable_headphones=0";
 	};
 
 	/delete-node/ wifi-pwrseq;
@@ -406,103 +310,6 @@
 };
 
 &gpio {
-	spi0_pins: spi0_pins {
-		brcm,pins = <9 10 11>;
-		brcm,function = <BCM2835_FSEL_ALT0>;
-	};
-
-	spi0_cs_pins: spi0_cs_pins {
-		brcm,pins = <8 7>;
-		brcm,function = <BCM2835_FSEL_GPIO_OUT>;
-	};
-
-	spi3_pins: spi3_pins {
-		brcm,pins = <1 2 3>;
-		brcm,function = <BCM2835_FSEL_ALT3>;
-	};
-
-	spi3_cs_pins: spi3_cs_pins {
-		brcm,pins = <0 24>;
-		brcm,function = <BCM2835_FSEL_GPIO_OUT>;
-	};
-
-	spi4_pins: spi4_pins {
-		brcm,pins = <5 6 7>;
-		brcm,function = <BCM2835_FSEL_ALT3>;
-	};
-
-	spi4_cs_pins: spi4_cs_pins {
-		brcm,pins = <4 25>;
-		brcm,function = <BCM2835_FSEL_GPIO_OUT>;
-	};
-
-	spi5_pins: spi5_pins {
-		brcm,pins = <13 14 15>;
-		brcm,function = <BCM2835_FSEL_ALT3>;
-	};
-
-	spi5_cs_pins: spi5_cs_pins {
-		brcm,pins = <12 26>;
-		brcm,function = <BCM2835_FSEL_GPIO_OUT>;
-	};
-
-	spi6_pins: spi6_pins {
-		brcm,pins = <19 20 21>;
-		brcm,function = <BCM2835_FSEL_ALT3>;
-	};
-
-	spi6_cs_pins: spi6_cs_pins {
-		brcm,pins = <18 27>;
-		brcm,function = <BCM2835_FSEL_GPIO_OUT>;
-	};
-
-	i2c0_pins: i2c0 {
-		brcm,pins = <0 1>;
-		brcm,function = <BCM2835_FSEL_ALT0>;
-		brcm,pull = <BCM2835_PUD_UP>;
-	};
-
-	i2c1_pins: i2c1 {
-		brcm,pins = <2 3>;
-		brcm,function = <BCM2835_FSEL_ALT0>;
-		brcm,pull = <BCM2835_PUD_UP>;
-	};
-
-	i2c3_pins: i2c3 {
-		brcm,pins = <4 5>;
-		brcm,function = <BCM2835_FSEL_ALT5>;
-		brcm,pull = <BCM2835_PUD_UP>;
-	};
-
-	i2c4_pins: i2c4 {
-		brcm,pins = <8 9>;
-		brcm,function = <BCM2835_FSEL_ALT5>;
-		brcm,pull = <BCM2835_PUD_UP>;
-	};
-
-	i2c5_pins: i2c5 {
-		brcm,pins = <12 13>;
-		brcm,function = <BCM2835_FSEL_ALT5>;
-		brcm,pull = <BCM2835_PUD_UP>;
-	};
-
-	i2c6_pins: i2c6 {
-		brcm,pins = <22 23>;
-		brcm,function = <BCM2835_FSEL_ALT5>;
-		brcm,pull = <BCM2835_PUD_UP>;
-	};
-
-	i2s_pins: i2s {
-		brcm,pins = <18 19 20 21>;
-		brcm,function = <BCM2835_FSEL_ALT0>;
-	};
-
-	sdio_pins: sdio_pins {
-		brcm,pins =     <34 35 36 37 38 39>;
-		brcm,function = <BCM2835_FSEL_ALT3>; // alt3 = SD1
-		brcm,pull =     <0 2 2 2 2 2>;
-	};
-
 	bt_pins: bt_pins {
 		brcm,pins = "-"; // non-empty to keep btuart happy, //4 = 0
 				 // to fool pinctrl
@@ -522,28 +329,10 @@
 		brcm,pull;
 	};
 
-	uart2_pins: uart2_pins {
-		brcm,pins = <0 1>;
-		brcm,function = <BCM2835_FSEL_ALT4>;
-		brcm,pull = <0 2>;
-	};
-
-	uart3_pins: uart3_pins {
-		brcm,pins = <4 5>;
-		brcm,function = <BCM2835_FSEL_ALT4>;
-		brcm,pull = <0 2>;
-	};
-
-	uart4_pins: uart4_pins {
-		brcm,pins = <8 9>;
-		brcm,function = <BCM2835_FSEL_ALT4>;
-		brcm,pull = <0 2>;
-	};
-
-	uart5_pins: uart5_pins {
-		brcm,pins = <12 13>;
-		brcm,function = <BCM2835_FSEL_ALT4>;
-		brcm,pull = <0 2>;
+	uart1_bt_pins: uart1_bt_pins {
+		brcm,pins = <32 33 30 31>;
+		brcm,function = <BCM2835_FSEL_ALT5>; /* alt5=UART1 */
+		brcm,pull = <0 2 2 0>;
 	};
 };
 
@@ -589,17 +378,19 @@
 };
 
 &leds {
+	// Declare the LED but leave it disabled, in case a user wants to map it
+	// to a GPIO on the header
 	act_led: led-act {
-		label = "led0";
-		linux,default-trigger = "default-on";
-		default-state = "on";
-		gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
+		default-state = "off";
+		linux,default-trigger = "mmc0";
+		gpios = <&gpio 0 GPIO_ACTIVE_HIGH>;
+		status = "disabled";
 	};
 
 	pwr_led: led-pwr {
-		label = "led1";
+		default-state = "off";
 		linux,default-trigger = "default-on";
-		gpios = <&expgpio 2 GPIO_ACTIVE_LOW>;
+		gpios = <&gpio 42 GPIO_ACTIVE_HIGH>;
 	};
 };
 
@@ -607,10 +398,12 @@
 	status = "disabled";
 };
 
-&audio {
+&vchiq {
 	pinctrl-names = "default";
 	pinctrl-0 = <&audio_pins>;
-	brcm,disable-headphones = <1>;
+};
+
+cam0_reg: &cam_dummy_reg {
 };
 
 &genet_mdio {
@@ -619,7 +412,10 @@
 
 / {
 	__overrides__ {
-		act_led_gpio = <&act_led>,"gpios:4";
+		audio = <&chosen>,"bootargs{on='snd_bcm2835.enable_hdmi=1',off='snd_bcm2835.enable_hdmi=0'}";
+
+		act_led_gpio = <&act_led>,"gpios:4",
+			       <&act_led>,"status=okay";
 		act_led_activelow = <&act_led>,"gpios:8";
 		act_led_trigger = <&act_led>,"linux,default-trigger";
 
@@ -629,9 +425,5 @@
 
 		eth_led0 = <&phy1>,"led-modes:0";
 		eth_led1 = <&phy1>,"led-modes:4";
-
-		sd_poll_once = <&emmc2>, "non-removable?";
-		spi_dma4 = <&spi0>, "dmas:0=", <&dma40>,
-			   <&spi0>, "dmas:8=", <&dma40>;
 	};
 };

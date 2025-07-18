@@ -25,6 +25,8 @@
 #define RXFFR		0x014
 #define TXFFR		0x018
 
+#define DMACR   0x200
+
 /* Interrupt status register fields */
 #define ISR_TXFO	BIT(5)
 #define ISR_TXFE	BIT(4)
@@ -46,6 +48,17 @@
 #define TFCR(x)		(0x40 * x + 0x04C)
 #define RFF(x)		(0x40 * x + 0x050)
 #define TFF(x)		(0x40 * x + 0x054)
+
+#define DMACR_DMAEN_TX		BIT(17)
+#define DMACR_DMAEN_RX		BIT(16)
+#define DMACR_DMAEN_TXCH3	BIT(11)
+#define DMACR_DMAEN_TXCH2	BIT(10)
+#define DMACR_DMAEN_TXCH1	BIT(9)
+#define DMACR_DMAEN_TXCH0	BIT(8)
+#define DMACR_DMAEN_RXCH3	BIT(3)
+#define DMACR_DMAEN_RXCH2	BIT(2)
+#define DMACR_DMAEN_RXCH1	BIT(1)
+#define DMACR_DMAEN_RXCH0	BIT(0)
 
 /* I2SCOMPRegisters */
 #define I2S_COMP_PARAM_2	0x01F0
@@ -94,6 +107,7 @@ struct dw_i2s_dev {
 	unsigned int quirks;
 	unsigned int i2s_reg_comp1;
 	unsigned int i2s_reg_comp2;
+	unsigned int bclk_ratio;
 	struct device *dev;
 	u32 ccr;
 	u32 xfer_resolution;
@@ -124,9 +138,9 @@ void dw_pcm_push_tx(struct dw_i2s_dev *dev);
 void dw_pcm_pop_rx(struct dw_i2s_dev *dev);
 int dw_pcm_register(struct platform_device *pdev);
 #else
-void dw_pcm_push_tx(struct dw_i2s_dev *dev) { }
-void dw_pcm_pop_rx(struct dw_i2s_dev *dev) { }
-int dw_pcm_register(struct platform_device *pdev)
+static inline void dw_pcm_push_tx(struct dw_i2s_dev *dev) { }
+static inline void dw_pcm_pop_rx(struct dw_i2s_dev *dev) { }
+static inline int dw_pcm_register(struct platform_device *pdev)
 {
 	return -EINVAL;
 }

@@ -24,18 +24,18 @@
 #ifndef __DRM_PANEL_H__
 #define __DRM_PANEL_H__
 
+#include <drm/drm_connector.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/list.h>
 
 struct backlight_device;
+struct dentry;
 struct device_node;
 struct drm_connector;
 struct drm_device;
 struct drm_panel;
 struct display_timing;
-
-enum drm_panel_orientation;
 
 /**
  * struct drm_panel_funcs - perform operations on a given panel
@@ -64,8 +64,8 @@ enum drm_panel_orientation;
  * the panel. This is the job of the .unprepare() function.
  *
  * Backlight can be handled automatically if configured using
- * drm_panel_of_backlight(). Then the driver does not need to implement the
- * functionality to enable/disable backlight.
+ * drm_panel_of_backlight() or drm_panel_dp_aux_backlight(). Then the driver
+ * does not need to implement the functionality to enable/disable backlight.
  */
 struct drm_panel_funcs {
 	/**
@@ -116,6 +116,15 @@ struct drm_panel_funcs {
 			 struct drm_connector *connector);
 
 	/**
+	 * @get_orientation:
+	 *
+	 * Return the panel orientation set by device tree or EDID.
+	 *
+	 * This function is optional.
+	 */
+	enum drm_panel_orientation (*get_orientation)(struct drm_panel *panel);
+
+	/**
 	 * @get_timings:
 	 *
 	 * Copy display timings into the provided array and return
@@ -125,6 +134,13 @@ struct drm_panel_funcs {
 	 */
 	int (*get_timings)(struct drm_panel *panel, unsigned int num_timings,
 			   struct display_timing *timings);
+
+	/**
+	 * @debugfs_init:
+	 *
+	 * Allows panels to create panels-specific debugfs files.
+	 */
+	void (*debugfs_init)(struct drm_panel *panel, struct dentry *root);
 };
 
 /**
@@ -144,8 +160,8 @@ struct drm_panel {
 	 * Backlight device, used to turn on backlight after the call
 	 * to enable(), and to turn off backlight before the call to
 	 * disable().
-	 * backlight is set by drm_panel_of_backlight() and drivers
-	 * shall not assign it.
+	 * backlight is set by drm_panel_of_backlight() or
+	 * drm_panel_dp_aux_backlight() and drivers shall not assign it.
 	 */
 	struct backlight_device *backlight;
 
@@ -166,11 +182,29 @@ struct drm_panel {
 	int connector_type;
 
 	/**
+	 * @orientation:
+	 *
+	 * Panel orientation at initialisation. This is used to initialise the
+	 * drm_connector property for panel orientation.
+	 */
+	enum drm_panel_orientation orientation;
+
+	/**
 	 * @list:
 	 *
 	 * Panel entry in registry.
 	 */
 	struct list_head list;
+
+	/**
+	 * @prepare_upstream_first:
+	 *
+	 * The upstream controller should be prepared first, before the prepare
+	 * for the panel is called. This is largely required for DSI panels
+	 * where the DSI host controller should be initialised to LP-11 before
+	 * the panel is powered up.
+	 */
+	bool prepare_upstream_first;
 };
 
 void drm_panel_init(struct drm_panel *panel, struct device *dev,

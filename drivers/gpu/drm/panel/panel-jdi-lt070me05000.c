@@ -437,6 +437,7 @@ static int jdi_panel_add(struct jdi_panel *jdi)
 		return ret;
 	}
 
+	jdi->base.prepare_upstream_first = true;
 	drm_panel_init(&jdi->base, &jdi->dsi->dev, &jdi_panel_funcs,
 		       DRM_MODE_CONNECTOR_DSI);
 
@@ -473,10 +474,16 @@ static int jdi_panel_probe(struct mipi_dsi_device *dsi)
 	if (ret < 0)
 		return ret;
 
-	return mipi_dsi_attach(dsi);
+	ret = mipi_dsi_attach(dsi);
+	if (ret < 0) {
+		jdi_panel_del(jdi);
+		return ret;
+	}
+
+	return 0;
 }
 
-static int jdi_panel_remove(struct mipi_dsi_device *dsi)
+static void jdi_panel_remove(struct mipi_dsi_device *dsi)
 {
 	struct jdi_panel *jdi = mipi_dsi_get_drvdata(dsi);
 	int ret;
@@ -491,8 +498,6 @@ static int jdi_panel_remove(struct mipi_dsi_device *dsi)
 			ret);
 
 	jdi_panel_del(jdi);
-
-	return 0;
 }
 
 static void jdi_panel_shutdown(struct mipi_dsi_device *dsi)

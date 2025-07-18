@@ -23,6 +23,11 @@
 #define BCM2835_I2C_FIFO	0x10
 #define BCM2835_I2C_DIV		0x14
 #define BCM2835_I2C_DEL		0x18
+/*
+ * 16-bit field for the number of SCL cycles to wait after rising SCL
+ * before deciding the slave is not responding. 0 disables the
+ * timeout detection.
+ */
 #define BCM2835_I2C_CLKT	0x1c
 
 #define BCM2835_I2C_C_READ	BIT(0)
@@ -54,6 +59,10 @@
 static unsigned int debug;
 module_param(debug, uint, 0644);
 MODULE_PARM_DESC(debug, "1=err, 2=isr, 3=xfer");
+
+static unsigned int clk_tout_ms = 35; /* SMBUs-recommended 35ms */
+module_param(clk_tout_ms, uint, 0644);
+MODULE_PARM_DESC(clk_tout_ms, "clock-stretch timeout (mS)");
 
 #define BCM2835_DEBUG_MAX	512
 struct bcm2835_debug {
@@ -214,12 +223,12 @@ static int clk_bcm2835_i2c_set_rate(struct clk_hw *hw, unsigned long rate,
 			   (redl << BCM2835_I2C_REDL_SHIFT));
 
 	/*
-	 * Set the clock stretch timeout to the SMBUs-recommended 35ms.
+	 * Set the clock stretch timeout.
 	 */
-	if (rate > 0xffff*1000/35)
+	if (rate > 0xffff*1000/clk_tout_ms)
 	    clk_tout = 0xffff;
 	else
-	    clk_tout = 35*rate/1000;
+	    clk_tout = clk_tout_ms*rate/1000;
 
 	bcm2835_i2c_writel(div->i2c_dev, BCM2835_I2C_CLKT, clk_tout);
 
@@ -376,10 +385,8 @@ static irqreturn_t bcm2835_i2c_isr(int this_irq, void *data)
 	bcm2835_debug_add(i2c_dev, val);
 
 	err = val & (BCM2835_I2C_S_CLKT | BCM2835_I2C_S_ERR);
-	if (err) {
+	if (err && !(val & BCM2835_I2C_S_TA))
 		i2c_dev->msg_err = err;
-		goto complete;
-	}
 
 	if (val & BCM2835_I2C_S_DONE) {
 		if (!i2c_dev->curr_msg) {
@@ -391,8 +398,6 @@ static irqreturn_t bcm2835_i2c_isr(int this_irq, void *data)
 
 		if ((val & BCM2835_I2C_S_RXD) || i2c_dev->msg_buf_remaining)
 			i2c_dev->msg_err = BCM2835_I2C_S_LEN;
-		else
-			i2c_dev->msg_err = 0;
 		goto complete;
 	}
 
@@ -438,6 +443,7 @@ static int bcm2835_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[],
 {
 	struct bcm2835_i2c_dev *i2c_dev = i2c_get_adapdata(adap);
 	unsigned long time_left;
+	bool ignore_nak = false;
 	int i;
 
 	if (debug)
@@ -447,15 +453,19 @@ static int bcm2835_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[],
 		for (i = 0; i < num; i++)
 			bcm2835_debug_print_msg(i2c_dev, &msgs[i], i + 1, num, __func__);
 
-	for (i = 0; i < (num - 1); i++)
+	for (i = 0; i < (num - 1); i++) {
 		if (msgs[i].flags & I2C_M_RD) {
 			dev_warn_once(i2c_dev->dev,
 				      "only one read message supported, has to be last\n");
 			return -EOPNOTSUPP;
 		}
+		if (msgs[i].flags & I2C_M_IGNORE_NAK)
+			ignore_nak = true;
+	}
 
 	i2c_dev->curr_msg = msgs;
 	i2c_dev->num_msgs = num;
+	i2c_dev->msg_err = 0;
 	reinit_completion(&i2c_dev->completion);
 
 	bcm2835_i2c_start_transfer(i2c_dev);
@@ -464,6 +474,9 @@ static int bcm2835_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[],
 						adap->timeout);
 
 	bcm2835_i2c_finish_transfer(i2c_dev);
+
+	if (ignore_nak)
+		i2c_dev->msg_err &= ~BCM2835_I2C_S_ERR;
 
 	if (debug > 1 || (debug && (!time_left || i2c_dev->msg_err)))
 		bcm2835_debug_print(i2c_dev);
@@ -491,7 +504,7 @@ static int bcm2835_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[],
 
 static u32 bcm2835_i2c_func(struct i2c_adapter *adap)
 {
-	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
+	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL | I2C_FUNC_PROTOCOL_MANGLING;
 }
 
 static const struct i2c_algorithm bcm2835_i2c_algo = {
@@ -511,7 +524,7 @@ static const struct i2c_adapter_quirks bcm2835_i2c_quirks = {
 static int bcm2835_i2c_probe(struct platform_device *pdev)
 {
 	struct bcm2835_i2c_dev *i2c_dev;
-	struct resource *mem, *irq;
+	struct resource *mem;
 	int ret;
 	struct i2c_adapter *adap;
 	struct clk *mclk;
@@ -558,21 +571,20 @@ static int bcm2835_i2c_probe(struct platform_device *pdev)
 	ret = clk_prepare_enable(i2c_dev->bus_clk);
 	if (ret) {
 		dev_err(&pdev->dev, "Couldn't prepare clock");
-		return ret;
+		goto err_put_exclusive_rate;
 	}
 
-	irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!irq) {
-		dev_err(&pdev->dev, "No IRQ resource\n");
-		return -ENODEV;
+	i2c_dev->irq = platform_get_irq(pdev, 0);
+	if (i2c_dev->irq < 0) {
+		ret = i2c_dev->irq;
+		goto err_disable_unprepare_clk;
 	}
-	i2c_dev->irq = irq->start;
 
 	ret = request_irq(i2c_dev->irq, bcm2835_i2c_isr, IRQF_SHARED,
 			  dev_name(&pdev->dev), i2c_dev);
 	if (ret) {
 		dev_err(&pdev->dev, "Could not request IRQ\n");
-		return -ENODEV;
+		goto err_disable_unprepare_clk;
 	}
 
 	adap = &i2c_dev->adapter;
@@ -586,11 +598,26 @@ static int bcm2835_i2c_probe(struct platform_device *pdev)
 	adap->dev.of_node = pdev->dev.of_node;
 	adap->quirks = of_device_get_match_data(&pdev->dev);
 
+	/*
+	 * Disable the hardware clock stretching timeout. SMBUS
+	 * specifies a limit for how long the device can stretch the
+	 * clock, but core I2C doesn't.
+	 */
+	bcm2835_i2c_writel(i2c_dev, BCM2835_I2C_CLKT, 0);
 	bcm2835_i2c_writel(i2c_dev, BCM2835_I2C_C, 0);
 
 	ret = i2c_add_adapter(adap);
 	if (ret)
-		free_irq(i2c_dev->irq, i2c_dev);
+		goto err_free_irq;
+
+	return 0;
+
+err_free_irq:
+	free_irq(i2c_dev->irq, i2c_dev);
+err_disable_unprepare_clk:
+	clk_disable_unprepare(i2c_dev->bus_clk);
+err_put_exclusive_rate:
+	clk_rate_exclusive_put(i2c_dev->bus_clk);
 
 	return ret;
 }

@@ -11,11 +11,11 @@
 #include <linux/gpio/consumer.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/delay.h>
 
 #include <linux/spi/spi.h>
 #include <linux/spi/spi_bitbang.h>
 #include <linux/spi/spi_gpio.h>
-
 
 /*
  * This bitbanging SPI master driver should help make systems usable
@@ -35,7 +35,9 @@ struct spi_gpio {
 	struct gpio_desc		*sck;
 	struct gpio_desc		*miso;
 	struct gpio_desc		*mosi;
+	bool				sck_idle_input;
 	struct gpio_desc		**cs_gpios;
+	bool                            cs_dont_invert;
 };
 
 /*----------------------------------------------------------------------*/
@@ -109,12 +111,18 @@ static inline int getmiso(const struct spi_device *spi)
 }
 
 /*
- * NOTE:  this clocks "as fast as we can".  It "should" be a function of the
- * requested device clock.  Software overhead means we usually have trouble
- * reaching even one Mbit/sec (except when we can inline bitops), so for now
- * we'll just assume we never need additional per-bit slowdowns.
+ * Generic bit-banged GPIO SPI might free-run at something in the range
+ * 1Mbps ~ 10Mbps (depending on the platform), and some SPI devices may
+ * need to be clocked at a lower rate. ndelay() is often implemented by
+ * udelay() with rounding up, so do the delay only for nsecs >= 500
+ * (<= 1Mbps). The conditional test adds a small overhead.
  */
-#define spidelay(nsecs)	do {} while (0)
+
+static inline void spidelay(unsigned long nsecs)
+{
+	if (nsecs >= 500)
+		ndelay(nsecs);
+}
 
 #include "spi-bitbang-txrx.h"
 
@@ -135,25 +143,37 @@ static inline int getmiso(const struct spi_device *spi)
 static u32 spi_gpio_txrx_word_mode0(struct spi_device *spi,
 		unsigned nsecs, u32 word, u8 bits, unsigned flags)
 {
-	return bitbang_txrx_be_cpha0(spi, nsecs, 0, flags, word, bits);
+	if (unlikely(spi->mode & SPI_LSB_FIRST))
+		return bitbang_txrx_le_cpha0(spi, nsecs, 0, flags, word, bits);
+	else
+		return bitbang_txrx_be_cpha0(spi, nsecs, 0, flags, word, bits);
 }
 
 static u32 spi_gpio_txrx_word_mode1(struct spi_device *spi,
 		unsigned nsecs, u32 word, u8 bits, unsigned flags)
 {
-	return bitbang_txrx_be_cpha1(spi, nsecs, 0, flags, word, bits);
+	if (unlikely(spi->mode & SPI_LSB_FIRST))
+		return bitbang_txrx_le_cpha1(spi, nsecs, 0, flags, word, bits);
+	else
+		return bitbang_txrx_be_cpha1(spi, nsecs, 0, flags, word, bits);
 }
 
 static u32 spi_gpio_txrx_word_mode2(struct spi_device *spi,
 		unsigned nsecs, u32 word, u8 bits, unsigned flags)
 {
-	return bitbang_txrx_be_cpha0(spi, nsecs, 1, flags, word, bits);
+	if (unlikely(spi->mode & SPI_LSB_FIRST))
+		return bitbang_txrx_le_cpha0(spi, nsecs, 1, flags, word, bits);
+	else
+		return bitbang_txrx_be_cpha0(spi, nsecs, 1, flags, word, bits);
 }
 
 static u32 spi_gpio_txrx_word_mode3(struct spi_device *spi,
 		unsigned nsecs, u32 word, u8 bits, unsigned flags)
 {
-	return bitbang_txrx_be_cpha1(spi, nsecs, 1, flags, word, bits);
+	if (unlikely(spi->mode & SPI_LSB_FIRST))
+		return bitbang_txrx_le_cpha1(spi, nsecs, 1, flags, word, bits);
+	else
+		return bitbang_txrx_be_cpha1(spi, nsecs, 1, flags, word, bits);
 }
 
 /*
@@ -170,28 +190,40 @@ static u32 spi_gpio_spec_txrx_word_mode0(struct spi_device *spi,
 		unsigned nsecs, u32 word, u8 bits, unsigned flags)
 {
 	flags = spi->master->flags;
-	return bitbang_txrx_be_cpha0(spi, nsecs, 0, flags, word, bits);
+	if (unlikely(spi->mode & SPI_LSB_FIRST))
+		return bitbang_txrx_le_cpha0(spi, nsecs, 0, flags, word, bits);
+	else
+		return bitbang_txrx_be_cpha0(spi, nsecs, 0, flags, word, bits);
 }
 
 static u32 spi_gpio_spec_txrx_word_mode1(struct spi_device *spi,
 		unsigned nsecs, u32 word, u8 bits, unsigned flags)
 {
 	flags = spi->master->flags;
-	return bitbang_txrx_be_cpha1(spi, nsecs, 0, flags, word, bits);
+	if (unlikely(spi->mode & SPI_LSB_FIRST))
+		return bitbang_txrx_le_cpha1(spi, nsecs, 0, flags, word, bits);
+	else
+		return bitbang_txrx_be_cpha1(spi, nsecs, 0, flags, word, bits);
 }
 
 static u32 spi_gpio_spec_txrx_word_mode2(struct spi_device *spi,
 		unsigned nsecs, u32 word, u8 bits, unsigned flags)
 {
 	flags = spi->master->flags;
-	return bitbang_txrx_be_cpha0(spi, nsecs, 1, flags, word, bits);
+	if (unlikely(spi->mode & SPI_LSB_FIRST))
+		return bitbang_txrx_le_cpha0(spi, nsecs, 1, flags, word, bits);
+	else
+		return bitbang_txrx_be_cpha0(spi, nsecs, 1, flags, word, bits);
 }
 
 static u32 spi_gpio_spec_txrx_word_mode3(struct spi_device *spi,
 		unsigned nsecs, u32 word, u8 bits, unsigned flags)
 {
 	flags = spi->master->flags;
-	return bitbang_txrx_be_cpha1(spi, nsecs, 1, flags, word, bits);
+	if (unlikely(spi->mode & SPI_LSB_FIRST))
+		return bitbang_txrx_le_cpha1(spi, nsecs, 1, flags, word, bits);
+	else
+		return bitbang_txrx_be_cpha1(spi, nsecs, 1, flags, word, bits);
 }
 
 /*----------------------------------------------------------------------*/
@@ -201,16 +233,29 @@ static void spi_gpio_chipselect(struct spi_device *spi, int is_active)
 	struct spi_gpio *spi_gpio = spi_to_spi_gpio(spi);
 
 	/* set initial clock line level */
-	if (is_active)
-		gpiod_set_value_cansleep(spi_gpio->sck, spi->mode & SPI_CPOL);
+	if (is_active) {
+		if (spi_gpio->sck_idle_input)
+			gpiod_direction_output(spi_gpio->sck, spi->mode & SPI_CPOL);
+		else
+			gpiod_set_value_cansleep(spi_gpio->sck, spi->mode & SPI_CPOL);
+	}
 
-	/* Drive chip select line, if we have one */
+	/*
+	 * Drive chip select line, if we have one.
+	 * SPI chip selects are normally active-low, but when
+	 * cs_dont_invert is set, we assume their polarity is
+	 * controlled by the GPIO, and write '1' to assert.
+	 */
 	if (spi_gpio->cs_gpios) {
 		struct gpio_desc *cs = spi_gpio->cs_gpios[spi->chip_select];
+		int val = ((spi->mode & SPI_CS_HIGH) || spi_gpio->cs_dont_invert) ?
+			is_active : !is_active;
 
-		/* SPI chip selects are normally active-low */
-		gpiod_set_value_cansleep(cs, (spi->mode & SPI_CS_HIGH) ? is_active : !is_active);
+		gpiod_set_value_cansleep(cs, val);
 	}
+
+	if (spi_gpio->sck_idle_input && !is_active)
+		gpiod_direction_input(spi_gpio->sck);
 }
 
 static int spi_gpio_setup(struct spi_device *spi)
@@ -222,12 +267,14 @@ static int spi_gpio_setup(struct spi_device *spi)
 	/*
 	 * The CS GPIOs have already been
 	 * initialized from the descriptor lookup.
+	 * Here we set them to the non-asserted state.
 	 */
 	if (spi_gpio->cs_gpios) {
 		cs = spi_gpio->cs_gpios[spi->chip_select];
 		if (!spi->controller_state && cs)
 			status = gpiod_direction_output(cs,
-						  !(spi->mode & SPI_CS_HIGH));
+							!((spi->mode & SPI_CS_HIGH) ||
+							   spi_gpio->cs_dont_invert));
 	}
 
 	if (!status)
@@ -244,9 +291,19 @@ static int spi_gpio_set_direction(struct spi_device *spi, bool output)
 	if (output)
 		return gpiod_direction_output(spi_gpio->mosi, 1);
 
-	ret = gpiod_direction_input(spi_gpio->mosi);
-	if (ret)
-		return ret;
+	/*
+	 * Only change MOSI to an input if using 3WIRE mode.
+	 * Otherwise, MOSI could be left floating if there is
+	 * no pull resistor connected to the I/O pin, or could
+	 * be left logic high if there is a pull-up. Transmitting
+	 * logic high when only clocking MISO data in can put some
+	 * SPI devices in to a bad state.
+	 */
+	if (spi->mode & SPI_3WIRE) {
+		ret = gpiod_direction_input(spi_gpio->mosi);
+		if (ret)
+			return ret;
+	}
 	/*
 	 * Send a turnaround high impedance cycle when switching
 	 * from output to input. Theoretically there should be
@@ -289,8 +346,41 @@ static int spi_gpio_request(struct device *dev, struct spi_gpio *spi_gpio)
 	if (IS_ERR(spi_gpio->miso))
 		return PTR_ERR(spi_gpio->miso);
 
+	spi_gpio->sck_idle_input = device_property_read_bool(dev, "sck-idle-input");
 	spi_gpio->sck = devm_gpiod_get(dev, "sck", GPIOD_OUT_LOW);
 	return PTR_ERR_OR_ZERO(spi_gpio->sck);
+}
+
+/*
+ * In order to implement "sck-idle-input" (which requires SCK
+ * direction and CS level to be switched in a particular order),
+ * we need to control GPIO chip selects from within this driver.
+ */
+
+static int spi_gpio_probe_get_cs_gpios(struct device *dev,
+				       struct spi_master *master,
+				       bool gpio_defines_polarity)
+{
+	int i;
+	struct spi_gpio *spi_gpio = spi_master_get_devdata(master);
+
+	spi_gpio->cs_dont_invert = gpio_defines_polarity;
+	spi_gpio->cs_gpios = devm_kcalloc(dev, master->num_chipselect,
+					  sizeof(*spi_gpio->cs_gpios),
+					  GFP_KERNEL);
+	if (!spi_gpio->cs_gpios)
+		return -ENOMEM;
+
+	for (i = 0; i < master->num_chipselect; i++) {
+		spi_gpio->cs_gpios[i] =
+			devm_gpiod_get_index(dev, "cs", i,
+					     gpio_defines_polarity ?
+						GPIOD_OUT_LOW : GPIOD_OUT_HIGH);
+		if (IS_ERR(spi_gpio->cs_gpios[i]))
+			return PTR_ERR(spi_gpio->cs_gpios[i]);
+	}
+
+	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -303,10 +393,12 @@ MODULE_DEVICE_TABLE(of, spi_gpio_dt_ids);
 static int spi_gpio_probe_dt(struct platform_device *pdev,
 			     struct spi_master *master)
 {
-	master->dev.of_node = pdev->dev.of_node;
-	master->use_gpio_descriptors = true;
+	struct device *dev = &pdev->dev;
 
-	return 0;
+	master->dev.of_node = dev->of_node;
+	master->num_chipselect = gpiod_count(dev, "cs");
+
+	return spi_gpio_probe_get_cs_gpios(dev, master, true);
 }
 #else
 static inline int spi_gpio_probe_dt(struct platform_device *pdev,
@@ -321,8 +413,6 @@ static int spi_gpio_probe_pdata(struct platform_device *pdev,
 {
 	struct device *dev = &pdev->dev;
 	struct spi_gpio_platform_data *pdata = dev_get_platdata(dev);
-	struct spi_gpio *spi_gpio = spi_master_get_devdata(master);
-	int i;
 
 #ifdef GENERIC_BITBANG
 	if (!pdata || !pdata->num_chipselect)
@@ -334,20 +424,7 @@ static int spi_gpio_probe_pdata(struct platform_device *pdev,
 	 */
 	master->num_chipselect = pdata->num_chipselect ?: 1;
 
-	spi_gpio->cs_gpios = devm_kcalloc(dev, master->num_chipselect,
-					  sizeof(*spi_gpio->cs_gpios),
-					  GFP_KERNEL);
-	if (!spi_gpio->cs_gpios)
-		return -ENOMEM;
-
-	for (i = 0; i < master->num_chipselect; i++) {
-		spi_gpio->cs_gpios[i] = devm_gpiod_get_index(dev, "cs", i,
-							     GPIOD_OUT_HIGH);
-		if (IS_ERR(spi_gpio->cs_gpios[i]))
-			return PTR_ERR(spi_gpio->cs_gpios[i]);
-	}
-
-	return 0;
+	return spi_gpio_probe_get_cs_gpios(dev, master, false);
 }
 
 static int spi_gpio_probe(struct platform_device *pdev)
@@ -378,7 +455,7 @@ static int spi_gpio_probe(struct platform_device *pdev)
 
 	master->bits_per_word_mask = SPI_BPW_RANGE_MASK(1, 32);
 	master->mode_bits = SPI_3WIRE | SPI_3WIRE_HIZ | SPI_CPHA | SPI_CPOL |
-			    SPI_CS_HIGH;
+			    SPI_CS_HIGH | SPI_LSB_FIRST;
 	if (!spi_gpio->mosi) {
 		/* HW configuration without MOSI pin
 		 *
